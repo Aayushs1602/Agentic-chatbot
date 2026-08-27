@@ -284,6 +284,26 @@ class Orchestrator:
                     result_summary={"resolved": report.resolved,
                                     "removed_invented": report.invented},
                 )
+            # The model often writes a good, faithful answer and simply omits
+            # the markers — measured on the golden set, that accounted for as
+            # many failures as genuinely ungrounded output. Discarding a correct
+            # answer over missing apparatus is the wrong trade, so ask once for
+            # the markers before falling back to a refusal.
+            if not report.is_grounded and not result.artifacts and chunks and raw.strip():
+                repaired = await self._add_citations(raw, chunks, system)
+                if repaired:
+                    report = resolve_citations(repaired, chunks)
+                    if report.is_grounded:
+                        result.text = report.text
+                        result.citations = report.citations
+                        yield ToolEvent(
+                            name="add_citations",
+                            args={},
+                            result_summary={"resolved": report.resolved},
+                        )
+                        yield _ReplaceText(report.text)
+                        log.info("citations_repaired", **report.to_log())
+
             if not report.is_grounded and not result.artifacts:
                 # Generated without citing anything resolvable. The text is not
                 # trustworthy as a grounded answer, so it is replaced rather
@@ -416,6 +436,30 @@ class Orchestrator:
         # whole, which may have been repaired and has invented markers stripped.
         yield _ReplaceText(report.text)
         yield Completed(finish_reason=result.finish_reason, usage=result.usage)
+
+    async def _add_citations(
+        self, answer: str, chunks: List[Any], system: str
+    ) -> Optional[str]:
+        """Ask once for markers on an otherwise-good answer.
+
+        Deliberately narrow: the instruction is to attach markers and change
+        nothing else. Rewriting invites the model to introduce claims the
+        sources don't support, which is the problem this is meant to solve.
+        """
+        markers = ", ".join(c.marker for c in chunks)
+        prompt = (
+            "The answer below is missing its source citations.\n\n"
+            "Return the SAME answer with a source marker at the end of every "
+            f"factual sentence. Use only these ids: {markers}. Example:\n"
+            "  Retention is the signal to trust [S1].\n\n"
+            "Change nothing else — do not add claims, do not reword, do not "
+            "add a preamble. Return only the answer.\n\n"
+            f"Answer:\n{answer}"
+        )
+        repaired = await self._collect([Message(role="user", content=prompt)], system=system)
+        if isinstance(repaired, StreamError) or not repaired.strip():
+            return None
+        return repaired.strip()
 
     async def _collect(self, messages: List[Message], *, system: str):
         """Run one non-streamed generation, returning text or a StreamError."""

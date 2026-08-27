@@ -9,7 +9,7 @@ COMPOSE := docker compose
 LIMIT ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down restart logs ps build ingest reingest search test test-local fmt psql clean nuke bootstrap
+.PHONY: help env up down restart logs ps build ingest reingest search test test-local evaluate calibrate prune-ads psql clean nuke bootstrap
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -54,6 +54,15 @@ test: ## Run the backend test suite inside the container
 
 test-local: ## Run the tests on your host (no Docker, no Ollama, no API keys needed)
 	cd backend && python -m pytest -q
+
+evaluate: ## Measure the PRD success metric end-to-end (needs a live model)
+	$(COMPOSE) exec backend python -m scripts.evaluate
+
+calibrate: ## Regenerate the retrieval calibration evidence
+	$(COMPOSE) exec backend python -m scripts.calibrate_retrieval
+
+prune-ads: ## Remove sponsor reads from an existing index (add DRY=1 to preview)
+	$(COMPOSE) exec backend python -m scripts.prune_ads $(if $(DRY),--dry-run,)
 
 psql: ## Open a psql shell against the dev database
 	$(COMPOSE) exec db psql -U $${POSTGRES_USER:-lenny} -d $${POSTGRES_DB:-lenny}

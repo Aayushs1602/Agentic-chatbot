@@ -61,7 +61,14 @@ Intents:
   referring to the previous answer ("turn that into an essay").
 - create_artifact: asks for a document, table, checklist, template, dashboard,
   one-pager, or HTML/markdown output to look at rather than read as chat.
-- chitchat: greetings, thanks, or questions about you and your capabilities.
+- chitchat: greetings, thanks, and questions about you and your capabilities.
+  ONLY these. A request for information of any kind is never chitchat — even
+  when the archive plainly cannot answer it. "What is the weather tomorrow",
+  "what is my account balance", and "write me some code" are all
+  knowledge_question, and the retrieval step will correctly find nothing. This
+  matters because chitchat skips retrieval and grounding entirely, so misrouting
+  an information request there is the one way an ungrounded claim reaches the
+  user.
 
 Also produce search_query: a standalone search query for the transcript corpus.
 Resolve pronouns using the conversation so far — if the user says "expand on
@@ -128,30 +135,48 @@ async def route(
 
 # ── Relevance gate ──────────────────────────────────────────────────────
 
+# One judgement, not two. An earlier version asked for `answerable` *and*
+# `relevant_sources`, which a small model routinely answered inconsistently
+# (answerable=false alongside a populated source list). Asking only which
+# sources are useful, and deriving answerability from that, removes the
+# contradiction entirely.
 _RELEVANCE_SCHEMA = {
     "type": "object",
     "properties": {
-        "answerable": {"type": "boolean"},
-        "relevant_sources": {"type": "array", "items": {"type": "string"}},
+        "useful_sources": {"type": "array", "items": {"type": "string"}},
         "missing": {"type": "string"},
     },
-    "required": ["answerable", "relevant_sources"],
+    "required": ["useful_sources"],
 }
 
-_RELEVANCE_SYSTEM = """Decide whether the transcript excerpts contain information that
-answers the user's question.
+# Framing matters more than strictness here, and this was measured.
+#
+# Asking "do these excerpts ANSWER the question" refused 5 of 6 questions whose
+# top retrieval hit was the exactly-matching episode — because podcast
+# transcripts almost never contain a passage that neatly answers anything. They
+# contain relevant discussion. The model was applying the test it was given,
+# correctly, and the test was wrong.
+#
+# Asking "would someone find this USEFUL, and remember these are conversational"
+# scores 5/6 on covered questions while still refusing 5/5 out-of-corpus ones.
+# Precision is preserved by naming the out-of-domain categories explicitly
+# rather than by demanding a higher bar of relevance.
+_RELEVANCE_SYSTEM = """You are filtering search results from a podcast transcript archive.
 
-Judge substance, not phrasing. The excerpts rarely restate the question in their
-own words — a guest describing retention curves DOES answer "how do I know I
-have product-market fit". Set answerable true when the excerpts give the user
-something real to act on, even partially.
+For each excerpt, decide whether it contains material a person asking this
+question would find USEFUL. These are conversational transcripts: a useful
+excerpt discusses the topic, gives an example, or shares experience. It will
+almost never restate the question or give a tidy, complete answer — do not
+require that.
 
-Set answerable false only when the excerpts are about a genuinely different
-subject, or merely name-drop the topic without saying anything about it.
+useful_sources: the ids (like "S1") of every excerpt on the question's topic.
 
-- answerable: true only if the excerpts substantively answer the question.
-- relevant_sources: the ids (like "S1") that carry the answer. Empty if none do.
-- missing: when answerable is false, one short clause naming what is absent.
+Leave useful_sources EMPTY only when the excerpts are about a genuinely
+different subject. A question about weather, medicine, code, personal account
+data, or academic physics has no useful excerpt in a product-and-growth archive.
+
+missing: when useful_sources is empty, one short clause naming the subject the
+excerpts are actually about.
 
 Respond with JSON only."""
 
@@ -207,9 +232,11 @@ async def check_relevance(
             system=_RELEVANCE_SYSTEM,
             temperature=0.0,
         )
+        useful = [str(s) for s in parsed.get("useful_sources", []) if str(s).strip()]
         relevance = Relevance(
-            answerable=bool(parsed.get("answerable")),
-            relevant_sources=[str(s) for s in parsed.get("relevant_sources", [])],
+            # Derived, never separately asserted — see the schema comment.
+            answerable=bool(useful),
+            relevant_sources=useful,
             missing=str(parsed.get("missing", "")),
         )
         log.info(

@@ -226,6 +226,26 @@ against the artifact sanitizer.
 
 UI steps are in [`docs/manual-test-plan.md`](docs/manual-test-plan.md).
 
+### Measuring the product metric
+
+The golden set is also an end-to-end acceptance test. This one **does** need a
+live model, which is why it is a script rather than part of the pytest suite:
+
+```bash
+docker compose exec backend python -m scripts.evaluate     # make evaluate
+```
+
+It runs 15 in-corpus and 5 out-of-corpus questions through the whole agent loop
+and reports the grounded rate and the refusal rate against their targets. Re-run
+it after changing a prompt, a skill, or the retrieval configuration.
+
+Two other operational scripts:
+
+```bash
+docker compose exec backend python -m scripts.calibrate_retrieval   # make calibrate
+docker compose exec backend python -m scripts.prune_ads --dry-run   # make prune-ads DRY=1
+```
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |

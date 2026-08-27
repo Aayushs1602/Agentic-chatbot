@@ -108,21 +108,34 @@ class TestDigest:
 
 
 class TestRelevanceGate:
-    async def test_accepts_answerable_context(self):
-        provider = FakeProvider(json_responses=[
-            {"answerable": True, "relevant_sources": ["S1", "S2"]}
-        ])
+    async def test_accepts_context_with_useful_sources(self):
+        provider = FakeProvider(json_responses=[{"useful_sources": ["S1", "S2"]}])
         result = await check_relevance(provider, "q", '<source id="S1">text</source>')
         assert result.answerable
         assert result.relevant_sources == ["S1", "S2"]
 
-    async def test_rejects_unanswerable_context(self):
+    async def test_rejects_context_with_no_useful_sources(self):
         provider = FakeProvider(json_responses=[
-            {"answerable": False, "relevant_sources": [], "missing": "anything about pricing"}
+            {"useful_sources": [], "missing": "anything about pricing"}
         ])
         result = await check_relevance(provider, "q", '<source id="S1">text</source>')
         assert not result.answerable
         assert result.missing == "anything about pricing"
+
+    async def test_answerability_is_derived_not_asserted(self):
+        # A small model routinely returned answerable=false alongside a
+        # populated source list. Deriving it from the list removes the
+        # contradiction rather than picking a winner.
+        provider = FakeProvider(json_responses=[
+            {"answerable": False, "useful_sources": ["S1"]}
+        ])
+        result = await check_relevance(provider, "q", '<source id="S1">text</source>')
+        assert result.answerable
+
+    async def test_blank_source_ids_are_ignored(self):
+        provider = FakeProvider(json_responses=[{"useful_sources": ["", "  "]}])
+        result = await check_relevance(provider, "q", '<source id="S1">text</source>')
+        assert not result.answerable
 
     async def test_empty_context_is_not_answerable_without_a_model_call(self):
         provider = FakeProvider()
