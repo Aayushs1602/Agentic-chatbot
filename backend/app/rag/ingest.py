@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -98,6 +99,20 @@ def _as_list(value: Any) -> List[str]:
     return [str(value)]
 
 
+def _as_date(value: Any) -> Optional[date]:
+    """Coerce a frontmatter date to a `datetime.date`, or None."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
 def _first(meta: Dict[str, Any], *keys: str) -> Optional[Any]:
     """Frontmatter key names vary across the corpus; take the first present."""
     for key in keys:
@@ -111,11 +126,17 @@ def parse_episode(path: Path, repo_root: Path) -> Tuple[Dict[str, Any], str]:
     post = frontmatter.loads(raw)
     meta = post.metadata or {}
 
-    published = _first(meta, "published_at", "date", "published", "upload_date")
-    if hasattr(published, "isoformat"):
-        published = published.isoformat()[:10]
-    elif published is not None:
-        published = str(published)[:10]
+    # `publish_date` is what this corpus actually uses. Omitting it left all
+    # 303 published_on values NULL, which silently disabled every
+    # date-ordered catalogue query while ingestion reported success.
+    published = _first(
+        meta, "publish_date", "published_at", "date", "published", "upload_date"
+    )
+    # asyncpg binds a `date` column from a real date object, not a string — a
+    # `::date` cast in SQL does not rescue a str parameter. YAML gives us either
+    # already, depending on quoting, so normalise here rather than at each of
+    # the two call sites.
+    published = _as_date(published)
 
     video_id = _first(meta, "video_id", "youtube_id", "videoId")
     youtube_url = _first(meta, "youtube_url", "url", "link")
@@ -124,7 +145,8 @@ def parse_episode(path: Path, repo_root: Path) -> Tuple[Dict[str, Any], str]:
 
     duration = _first(meta, "duration_seconds", "duration_s", "duration")
     try:
-        duration = int(duration) if duration is not None else None
+        # Arrives as a float-ish string ("3946.0"), so via float() not int().
+        duration = int(float(duration)) if duration is not None else None
     except (TypeError, ValueError):
         duration = None  # some entries carry "1:23:45" rather than seconds
 

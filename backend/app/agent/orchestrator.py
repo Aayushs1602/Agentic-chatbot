@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.agent.artifacts import ParsedArtifact, extract_artifacts
+from app.agent.catalog import answer as catalog_answer
+from app.agent.catalog import looks_like_catalog_question
 from app.agent.citations import CitationReport, resolve_citations
 from app.agent.router import Intent, Relevance, Route, check_relevance, route
 from app.agent.ship30 import (
@@ -151,6 +153,28 @@ class Orchestrator:
             ):
                 yield event
             return
+
+        # 1b ── Catalogue questions ("how many episodes", "the longest one")
+        #       are about the archive's metadata, not about what was said in it.
+        #       Semantic search over transcript chunks cannot answer them, so
+        #       they were being refused on data the system holds. Answered from
+        #       SQL instead: exact by construction, no citation needed because
+        #       the corpus itself is the source.
+        if looks_like_catalog_question(question):
+            catalog = await self._timed_tool(
+                result, "query_catalog", {"question": question[:120]},
+                lambda: catalog_answer(self.provider, question),
+            )
+            if not isinstance(catalog, StreamError) and catalog.handled:
+                yield ToolEvent(
+                    name="query_catalog", args={},
+                    result_summary={"answered": True},
+                )
+                result.text = catalog.text
+                result.finish_reason = "catalog"
+                yield TextDelta(catalog.text)
+                yield Completed(finish_reason="catalog", usage=result.usage)
+                return
 
         # 2 ── Retrieve.
         retrieved = await self._timed_tool(
