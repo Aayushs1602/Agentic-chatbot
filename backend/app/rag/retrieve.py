@@ -386,6 +386,31 @@ async def retrieve(
     return result
 
 
+# "[00:50:53]", "(01:02:03)" and "Lenny (00:12:34):" all appear in transcript
+# text. They are apparatus, not content — and a model shown them will read them
+# as durations. Observed live: asked which episode was longest, it answered
+# "spans from 00:50:53 to 01:01:34, covering approximately 50 minutes", which is
+# fabricated three ways over (those are chunk markers, that span is 11 minutes,
+# and the episode named is not the longest) — while carrying a valid citation,
+# so every downstream grounding check passed it.
+#
+# The real timing is already held in `start_seconds` for deep links, so removing
+# it from what the model reads costs nothing.
+# Bracketed forms only. This corpus writes markers as "[00:12:34]" or
+# "Lenny (00:50:53):", so the brackets are what distinguish apparatus from
+# content — stripping bare digits too turned "we shipped at 12:30 today" into
+# "we shipped at today", destroying a real detail to remove a fake one.
+_TIMESTAMP_IN_TEXT_RE = re.compile(r"[\[\(]\s*(?:\d{1,2}:)?\d{1,2}:\d{2}\s*[\]\)]")
+
+
+def strip_timestamps(text: str) -> str:
+    """Remove transcript time markers before the model sees the passage."""
+    cleaned = _TIMESTAMP_IN_TEXT_RE.sub(" ", text)
+    # "Lenny  :" is what stripping "Lenny (00:12:34):" leaves behind.
+    cleaned = re.sub(r"\s+:", ":", cleaned)
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
+
 def format_context(chunks: List[RetrievedChunk], *, max_chars: int = 12000) -> str:
     """Render retrieved chunks as delimited, labelled context.
 
@@ -400,7 +425,7 @@ def format_context(chunks: List[RetrievedChunk], *, max_chars: int = 12000) -> s
         header = chunk.episode_title
         if chunk.guests:
             header += f" — {', '.join(chunk.guests)}"
-        body = chunk.text
+        body = strip_timestamps(chunk.text)
         block = f"<source id=\"{chunk.marker}\">\n{header}\n\n{body}\n</source>"
         if len(block) > budget:
             block = block[: max(0, budget)] + "\n</source>"

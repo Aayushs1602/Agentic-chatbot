@@ -125,3 +125,52 @@ class TestDataQuality:
 
         result = await answer(FakeProvider(), "which is the shortest episode")
         assert "clip" in result.text.lower()
+
+
+class TestRealPhrasings:
+    """Detection is operation-first because noun-first missed how people type.
+
+    Every phrasing below was used against the running system and fell through to
+    semantic search. One produced a fabricated episode duration with a valid
+    citation attached — the worst output this system has generated.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "give me the lonngest lenny ep",   # typo + abbreviation
+            "what is the longest video",       # "video", not "episode"
+            "longest ep",                      # two words
+            "whats the longest one",           # "one" as the noun
+            "which is the shortest pod",
+            "how many eps are there",
+        ],
+    )
+    def test_detects_real_phrasings(self, message):
+        assert looks_like_catalog_question(message)
+
+    @pytest.mark.parametrize(
+        "message,expected",
+        [
+            ("give me the lonngest lenny ep", "longest"),
+            ("what is the longest video", "longest"),
+            ("whats the shortst one", "shortest"),
+        ],
+    )
+    def test_classifies_through_typos(self, message, expected):
+        # A reversed or missed superlative is a confidently wrong fact.
+        assert classify(message) == expected
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "How do I know when I have product-market fit?",
+            "What was the first thing they tried when scaling the team?",
+            "How should I price a B2B product?",
+            "time",
+        ],
+    )
+    def test_still_leaves_content_questions_alone(self, message):
+        # "first" is an operation word, so a long content question containing it
+        # must not be captured — the noun and length guards carry that.
+        assert not looks_like_catalog_question(message)

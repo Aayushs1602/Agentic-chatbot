@@ -173,3 +173,48 @@ class TestSparseQueryBuilder:
         assert "product-market" in terms
         assert "2024" in terms
         assert "b2b" in terms
+
+
+class TestTimestampStripping:
+    """Transcript time markers must not reach the model.
+
+    Observed live: asked which episode was longest, the model answered "spans
+    from 00:50:53 to 01:01:34, covering approximately 50 minutes" — reading chunk
+    markers as a duration. Fabricated three ways (those are markers, the span is
+    11 minutes, and that episode is not the longest), and it carried a valid
+    citation, so every grounding check passed it.
+    """
+
+    def test_strips_bracketed_markers(self):
+        from app.rag.retrieve import strip_timestamps
+
+        assert "00:12:34" not in strip_timestamps("[00:12:34] Guest: hello")
+
+    def test_strips_speaker_prefix_markers(self):
+        from app.rag.retrieve import strip_timestamps
+
+        out = strip_timestamps("Lenny (00:50:53): So what happened?")
+        assert "00:50:53" not in out
+        assert out.startswith("Lenny:")  # speaker survives, marker does not
+
+    def test_keeps_times_mentioned_in_speech(self):
+        from app.rag.retrieve import strip_timestamps
+
+        # An earlier version stripped bare digits too, turning a real detail
+        # into "we shipped at today".
+        out = strip_timestamps("We shipped at 12:30 today")
+        assert "12:30" in out
+
+    def test_leaves_ordinary_text_alone(self):
+        from app.rag.retrieve import strip_timestamps
+
+        text = "Retention curves that flatten indicate product-market fit."
+        assert strip_timestamps(text) == text
+
+    def test_applied_by_format_context(self):
+        from app.rag.retrieve import format_context
+
+        c = chunk("a")
+        c.marker = "S1"
+        c.text = "[00:50:53] Guest: retention matters."
+        assert "00:50:53" not in format_context([c])

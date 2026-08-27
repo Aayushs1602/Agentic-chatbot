@@ -9,7 +9,7 @@ COMPOSE := docker compose
 LIMIT ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help env up down restart logs ps build ingest reingest search test test-local evaluate calibrate prune-ads psql clean nuke bootstrap
+.PHONY: help env up down restart logs watch watch-all watch-problems trace ps build ingest reingest search test test-local evaluate calibrate prune-ads psql clean nuke bootstrap
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -35,8 +35,20 @@ build: ## Rebuild images
 ps: ## Show service status
 	$(COMPOSE) ps
 
-logs: ## Tail backend logs
+logs: ## Tail backend logs (raw JSON)
 	$(COMPOSE) logs -f backend
+
+watch: ## Watch requests as a readable pipeline trace
+	@$(COMPOSE) logs -f --tail 0 backend | python scripts/pretty_logs.py
+
+watch-all: ## Same, but every event
+	@$(COMPOSE) logs -f --tail 0 backend | python scripts/pretty_logs.py --all
+
+watch-problems: ## Only fallbacks, refusals and errors
+	@$(COMPOSE) logs -f --tail 0 backend | python scripts/pretty_logs.py --problems
+
+trace: ## Replay recent requests from the log buffer.  make trace N=200
+	@$(COMPOSE) logs --tail $(or $(N),200) backend | python scripts/pretty_logs.py
 
 ingest: ## Ingest transcripts.  make ingest LIMIT=20  for a fast subset
 	$(COMPOSE) exec backend python -m app.rag.ingest $(if $(LIMIT),--limit $(LIMIT),)

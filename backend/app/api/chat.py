@@ -103,6 +103,23 @@ async def list_messages(session_id: UUID):
     return {"messages": await repo.list_messages(session_id)}
 
 
+@router.get("/messages/{message_id}/trace", summary="Agent trace for one turn")
+async def message_trace(message_id: UUID) -> Dict[str, Any]:
+    """Everything the agent did for one turn, after the fact.
+
+    The UI streams these steps live, but they are also persisted — so a turn can
+    be diagnosed hours later, from the database, without reproducing it or
+    grepping logs. That is the difference between "it gave a weird answer
+    yesterday" being investigable or not.
+    """
+    calls = await repo.list_tool_calls(message_id)
+    return {
+        "message_id": str(message_id),
+        "steps": calls,
+        "total_ms": sum(c.get("duration_ms") or 0 for c in calls),
+    }
+
+
 # ── Streaming chat ──────────────────────────────────────────────────────
 
 

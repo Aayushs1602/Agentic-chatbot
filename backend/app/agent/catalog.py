@@ -65,21 +65,96 @@ Respond with JSON only."""
 # both, and five entries sit between 1 and 3 minutes.
 _CLIP_SECONDS = 300
 
-# Catalogue questions are about the archive, not about what was said in it.
-_CATALOG_RE = re.compile(
-    r"\b(?:how many|longest|shortest|most recent|latest|newest|oldest|first|last)\b"
-    r"[^.?!]{0,40}\b(?:episode|episodes|podcast|show|interview)s?\b"
-    r"|\b(?:episode|episodes)\b[^.?!]{0,20}\b(?:list|available|do you have|are there)\b"
-    r"|\bwhich episodes?\b"
-    r"|\bwhat episodes?\b"
-    r"|\bepisode\s+(?:number\s+)?\d+\b"
-    r"|\bhow many\b[^.?!]{0,30}\b(?:guests?|transcripts?)\b",
+# Detection is operation-first, not noun-first.
+#
+# The original required an exact noun ("episode|podcast|show|interview") next to
+# the superlative, and missed every real phrasing a person actually used:
+# "give me the lonngest lenny ep", "what is the longest video", "the longest
+# one". Each fell through to semantic search, and one of them produced the worst
+# output this system has generated — a fabricated episode duration, read off the
+# `[00:50:53]` timestamp markers inside a chunk and presented as fact, with a
+# real citation attached.
+#
+# So: find the *operation* (with typo tolerance), then accept a much wider set
+# of nouns, or a short question where no other subject is present.
+_OPERATIONS = {
+    "longest", "shortest", "briefest", "biggest", "smallest",
+    "newest", "latest", "oldest", "earliest", "recent",
+    "first", "last", "many", "count", "total", "number",
+}
+
+_ARCHIVE_NOUNS = {
+    "episode", "episodes", "ep", "eps", "epsiode",
+    "video", "videos", "vid", "podcast", "podcasts", "pod",
+    "show", "shows", "interview", "interviews", "conversation",
+    "transcript", "transcripts", "lenny", "lennys", "one", "ones", "guest", "guests",
+}
+
+_TOKEN_RE = re.compile(r"[a-z0-9']+")
+_EPISODE_NUMBER_RE = re.compile(r"\bep(?:isode)?\s*(?:number\s*|#\s*|no\.?\s*)?\d+\b", re.I)
+# Short questions rarely carry a topic as well as a superlative, so a
+# superlative in a short question is almost always about the archive.
+_SHORT_QUESTION_WORDS = 7
+
+
+def _fuzzy_in(word: str, vocabulary: set) -> bool:
+    """Exact match, or a near-miss — people typo "lonngest"."""
+    if word in vocabulary:
+        return True
+    if len(word) < 5:
+        return False
+    import difflib
+
+    return bool(difflib.get_close_matches(word, vocabulary, n=1, cutoff=0.82))
+
+
+# Asking what someone *said* is always a content question, however many archive
+# nouns it contains. Without this veto, "What did guests say about hiring a
+# first PM?" matched on "first" + "guests" and would have been sent to SQL,
+# which cannot answer it — a worse failure than the gap being closed.
+_CONTENT_VERBS = {
+    "say", "says", "said", "talk", "talks", "talked", "discuss", "discusses",
+    "discussed", "mention", "mentions", "mentioned", "explain", "explains",
+    "explained", "recommend", "recommends", "recommended", "think", "thinks",
+    "advice", "suggest", "suggests", "suggested", "argue", "argues",
+}
+
+# Phrasings that ask what the archive *contains* rather than what was said in
+# it. These carry no superlative, so the operation check alone misses them.
+_CATALOG_PHRASE_RE = re.compile(
+    r"\b(?:which|what|list|show me)\s+(?:\w+\s+){0,2}"
+    r"(?:episode|episodes|eps?|video|videos|podcasts?)\b"
+    r"|\bepisodes?\b[^.?!]{0,25}\b(?:do you have|are there|available|exist)\b"
+    r"|\bhow many\b",
     re.I,
 )
 
 
 def looks_like_catalog_question(message: str) -> bool:
-    return bool(_CATALOG_RE.search(message))
+    # "episode 128" / "ep 12" is a catalogue question regardless of shape.
+    if _EPISODE_NUMBER_RE.search(message):
+        return True
+
+    words = _TOKEN_RE.findall(message.lower())
+    if not words:
+        return False
+
+    # The veto comes first: a question about what someone said is never
+    # answerable from metadata, whatever else it contains.
+    if any(w in _CONTENT_VERBS for w in words):
+        return False
+
+    if _CATALOG_PHRASE_RE.search(message):
+        return True
+
+    has_operation = any(_fuzzy_in(w, _OPERATIONS) for w in words)
+    if not has_operation:
+        return False
+
+    # A superlative needs either an archive noun, or a question short enough
+    # that the superlative is plainly the subject.
+    has_noun = any(w in _ARCHIVE_NOUNS for w in words)
+    return has_noun or len(words) <= _SHORT_QUESTION_WORDS
 
 
 @dataclass
@@ -133,7 +208,23 @@ _KIND_PATTERNS = [
 ]
 
 
+# Typo-tolerant word lists for the same operations, so "lonngest" classifies
+# as well as it detects. Order matters: shortest before longest, so a question
+# containing both resolves to the more specific ask.
+_KIND_WORDS = [
+    ("count", {"many", "count", "total", "number"}),
+    ("shortest", {"shortest", "briefest", "smallest"}),
+    ("longest", {"longest", "biggest"}),
+    ("newest", {"newest", "latest", "recent"}),
+    ("oldest", {"oldest", "earliest", "first"}),
+]
+
+
 def classify(question: str) -> str:
+    words = _TOKEN_RE.findall(question.lower())
+    for kind, vocabulary in _KIND_WORDS:
+        if any(_fuzzy_in(w, vocabulary) for w in words):
+            return kind
     for kind, pattern in _KIND_PATTERNS:
         if pattern.search(question):
             return kind
