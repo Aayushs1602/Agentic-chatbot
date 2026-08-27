@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import artifacts, chat, health, providers, search
+from app.api import admin, artifacts, chat, health, providers, search
 from app.config import settings
 from app.db import pool as db
 from app.agent.skills import get_skills
@@ -118,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(providers.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
     app.include_router(artifacts.router, prefix="/api")
+    app.include_router(admin.router, prefix="/api")
 
     return app
 

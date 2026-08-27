@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AdminDashboard } from "./components/AdminDashboard";
 import { ArtifactPane } from "./components/ArtifactPane";
 import { Composer } from "./components/Composer";
 import { MessageBubble } from "./components/MessageBubble";
@@ -46,6 +47,9 @@ export default function App() {
   const [activeArtifact, setActiveArtifact] = useState<string | null>(null);
   const [paneOpen, setPaneOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Hash routing rather than a router dependency: one extra view does not
+  // justify react-router, and #/inspect stays linkable and back-button-aware.
+  const [route, setRoute] = useState(() => window.location.hash);
 
   const abortRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -112,6 +116,12 @@ export default function App() {
   }, [messages, live?.text, live?.steps.length]);
 
   useEffect(() => () => abortRef.current?.(), []);
+
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   function onScroll() {
     const el = scrollRef.current;
@@ -222,6 +232,10 @@ export default function App() {
 
   const showPane = paneOpen && artifacts.length > 0;
 
+  if (route.startsWith("#/inspect")) {
+    return <AdminDashboard onClose={() => (window.location.hash = "")} />;
+  }
+
   return (
     <div className="flex h-full">
       <SessionSidebar
@@ -266,6 +280,13 @@ export default function App() {
               {artifacts.length} document{artifacts.length === 1 ? "" : "s"}
             </button>
           )}
+          <a
+            href="#/inspect"
+            title="Inspect the corpus"
+            className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[13px] hover:bg-surface-2"
+          >
+            Corpus
+          </a>
           <ProviderBadge readiness={readiness} onSwitched={refreshReadiness} />
         </header>
 

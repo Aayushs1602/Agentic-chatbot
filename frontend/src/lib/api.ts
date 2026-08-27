@@ -1,6 +1,10 @@
 import type {
+  AdminEpisode,
+  AdminStats,
   ApiErrorBody,
   Artifact,
+  EpisodeChunks,
+  FlaggedChunks,
   Message,
   ProvidersResponse,
   Readiness,
@@ -61,6 +65,19 @@ export const api = {
     request<{ messages: Message[] }>(`/api/sessions/${id}/messages`),
   listArtifacts: (id: string) =>
     request<{ artifacts: Artifact[] }>(`/api/sessions/${id}/artifacts`),
+
+  adminStats: () => request<AdminStats>("/api/admin/stats"),
+  adminEpisodes: (opts: { q?: string; order?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.q) params.set("q", opts.q);
+    if (opts.order) params.set("order", opts.order);
+    return request<{ total: number; episodes: AdminEpisode[] }>(
+      `/api/admin/episodes?${params.toString()}`,
+    );
+  },
+  adminEpisodeChunks: (id: string) =>
+    request<EpisodeChunks>(`/api/admin/episodes/${id}/chunks`),
+  adminFlagged: () => request<FlaggedChunks>("/api/admin/flagged"),
 };
 
 /**

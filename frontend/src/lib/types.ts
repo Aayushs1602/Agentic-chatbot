@@ -121,3 +121,58 @@ export type StreamEvent =
       usage: { tokens_in: number; tokens_out: number };
     }
   | { type: "error"; error: ApiErrorBody };
+
+// ── Corpus inspector ────────────────────────────────────────────────────
+
+export interface AdminStats {
+  corpus: { episodes: number; chunks: number; avg_tokens: number; min_tokens: number; max_tokens: number };
+  gaps: {
+    episodes_without_date: number;
+    episodes_without_duration: number;
+    chunks_without_timestamp: number;
+  };
+  last_ingest: {
+    started_at: string;
+    finished_at: string | null;
+    episodes_ingested: number;
+    chunks_written: number;
+    status: string;
+  } | null;
+}
+
+export interface AdminEpisode {
+  id: string;
+  slug: string;
+  title: string;
+  guests: string[];
+  published_on: string | null;
+  duration_s: number | null;
+  youtube_url: string | null;
+  chunk_count: number;
+  ingested_at: string | null;
+}
+
+export interface AdminChunk {
+  id: string;
+  ord: number;
+  text: string;
+  token_count: number;
+  start_char: number;
+  end_char: number;
+  start_seconds: number | null;
+  /** Quality problems, each corresponding to a defect that has shipped before. */
+  flags: string[];
+}
+
+export interface EpisodeChunks {
+  episode: AdminEpisode & { source_path: string; content_sha256: string };
+  chunk_count: number;
+  flagged: number;
+  chunks: AdminChunk[];
+}
+
+export interface FlaggedChunks {
+  scanned: number;
+  counts: Record<string, number>;
+  chunks: (AdminChunk & { episode_id: string; title: string })[];
+}

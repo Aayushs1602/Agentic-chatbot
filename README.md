@@ -43,6 +43,8 @@ open http://localhost:5173
 | **Artifacts** | Markdown and HTML documents rendered beside the chat in a sandboxed viewer that shows what it blocked and why. |
 | **Model choice** | Ollama (local, default), any OpenAI-compatible cloud endpoint, or the Claude Agent SDK — switchable in the UI. |
 | **Visible reasoning** | The agent's steps stream live: classify, search, check relevance, apply skill, verify citations. |
+| **Corpus inspector** | A read-only dashboard over the chunked corpus, flagging the defect classes that have shipped before. |
+| **Operator logs** | `make watch` renders each turn as a readable pipeline trace; every turn's trace is also persisted. |
 
 ## Prerequisites
 
@@ -132,6 +134,24 @@ curl -s -X POST http://localhost:8000/api/search \
 ```
 
 Interactive API docs: **http://localhost:8000/docs**
+
+### Inspecting the corpus
+
+**http://localhost:5173/#/inspect** — or the *Corpus* button in the header.
+
+Read-only views over what ingestion actually produced: per-episode passages with
+token counts, character ranges and timestamps, plus a **flagged** tab that
+scans every passage for the specific defects that have shipped here before —
+sponsor reads, passages starting mid-word, truncated fragments.
+
+Several real bugs in this project were invisible in every metric and obvious the
+moment someone read the chunks. This is the view that makes reading them normal
+rather than an archaeology exercise with `psql`.
+
+```bash
+curl -s localhost:8000/api/admin/stats   | python -m json.tool
+curl -s localhost:8000/api/admin/flagged | python -m json.tool
+```
 
 ### Things worth trying
 

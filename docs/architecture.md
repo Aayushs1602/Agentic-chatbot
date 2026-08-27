@@ -300,6 +300,11 @@ model than the user selected is its own kind of failure.
 | POST | `/api/search` | raw retrieval, no model |
 | GET | `/api/ingest/status` | last run |
 | GET | `/api/skills` | loaded skills |
+| GET | `/api/messages/{id}/trace` | persisted agent trace for one turn |
+| GET | `/api/admin/stats` | corpus health and metadata gaps |
+| GET | `/api/admin/episodes` | browse ingested episodes |
+| GET | `/api/admin/episodes/{id}/chunks` | passages for one episode, with quality flags |
+| GET | `/api/admin/flagged` | passages matching a known defect class |
 
 **SSE events:** `meta`, `tool`, `token`, `replace`, `citations`, `artifact`,
 `done`, `error`.
