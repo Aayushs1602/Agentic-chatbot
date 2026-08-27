@@ -212,3 +212,59 @@ class TestFenceLeftovers:
     def test_real_text_around_fences_survives(self):
         reply = f'Here you go.\n{F}artifact\n{self.DOC}\n{F}'
         assert extract_artifacts(reply).text == "Here you go."
+
+
+class TestSourcesSection:
+    """The model's own sources list is bare markers and says nothing.
+
+    Reported from real use: an artifact ended with "Sources: S1 S2 ... S8" while
+    the viewer showed the same eight with real titles, guests and timestamps.
+    The document's copy duplicated the cards and carried none of the detail.
+    """
+
+    def test_strips_a_bare_marker_list(self):
+        from app.agent.artifacts import strip_bare_sources
+
+        doc = "# Sales\n\nPoint one [S1].\n\nSources:\n- [S1]\n- [S2]\n- [S3]\n"
+        out = strip_bare_sources(doc)
+        assert "Sources" not in out
+        assert "Point one [S1]." in out
+
+    def test_strips_variant_headings(self):
+        from app.agent.artifacts import strip_bare_sources
+
+        for heading in ("Sources:", "## Sources", "References:", "Citations"):
+            doc = f"# D\n\nClaim [S1].\n\n{heading}\n- [S1]\n- [S2]\n"
+            assert "S2" not in strip_bare_sources(doc), heading
+
+    def test_keeps_a_real_section_that_merely_says_sources(self):
+        from app.agent.artifacts import strip_bare_sources
+
+        doc = "# D\n\nClaim [S1].\n\n## Sources of leverage\n\nFounders have three [S2].\n"
+        assert "Sources of leverage" in strip_bare_sources(doc)
+        assert "[S2]" in strip_bare_sources(doc)
+
+    def test_document_without_a_sources_section_is_untouched(self):
+        from app.agent.artifacts import strip_bare_sources
+
+        doc = "# D\n\nJust content [S1]."
+        assert strip_bare_sources(doc) == doc
+
+    def test_generated_footer_carries_real_detail(self):
+        from app.agent.citations import format_sources_footer, resolve_citations
+        from tests.fakes import fake_chunk
+
+        chunks = [fake_chunk("S1", title="The ultimate guide to founder-led sales")]
+        report = resolve_citations("Sell to a gap [S1].", chunks)
+        footer = format_sources_footer(report.citations)
+        assert "founder-led sales" in footer          # a title, not a marker
+        assert "t=120s" in footer                      # a timestamped deep link
+
+    def test_footer_does_not_turn_the_last_line_into_a_heading(self):
+        from app.agent.citations import format_sources_footer, resolve_citations
+        from tests.fakes import fake_chunk
+
+        report = resolve_citations("Final claim [S1].", [fake_chunk("S1")])
+        combined = report.text + format_sources_footer(report.citations)
+        # `text\n---` is setext syntax and would render the claim as an H2.
+        assert "Final claim [S1].\n---" not in combined

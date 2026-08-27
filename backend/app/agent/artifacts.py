@@ -140,6 +140,22 @@ def extract_artifacts(reply: str) -> ExtractionResult:
     return ExtractionResult(text=cleaned, artifacts=artifacts)
 
 
+# A trailing "Sources:" section the model wrote itself, containing nothing but
+# bare markers. It duplicates the viewer's source cards and carries none of
+# their information — no title, no guest, no timestamp. Stripped so a real one
+# can be appended in its place.
+_BARE_SOURCES_RE = re.compile(
+    r"\n[#*\s]*(?:sources?|references?|citations?)\s*:?\s*\n"
+    r"(?:[-*\d.\s]*\[?S\d+\]?[^\n]*\n?)+\s*$",
+    re.I,
+)
+
+
+def strip_bare_sources(body: str) -> str:
+    """Remove a self-written sources list made only of markers."""
+    return _BARE_SOURCES_RE.sub("", body).rstrip()
+
+
 def _normalise(text: str) -> str:
     """Lowercase, strip markup, collapse whitespace. For comparison only."""
     return " ".join(re.sub(r"[#*_`>\-\[\]]|<[^>]+>", " ", text).lower().split())

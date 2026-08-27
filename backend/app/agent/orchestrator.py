@@ -24,10 +24,18 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from app.agent.artifacts import ParsedArtifact, extract_artifacts
+from app.agent.artifacts import (
+    ParsedArtifact,
+    extract_artifacts,
+    strip_bare_sources,
+)
 from app.agent.catalog import answer as catalog_answer
 from app.agent.catalog import looks_like_catalog_question
-from app.agent.citations import CitationReport, resolve_citations
+from app.agent.citations import (
+    CitationReport,
+    format_sources_footer,
+    resolve_citations,
+)
 from app.agent.router import Intent, Relevance, Route, check_relevance, route
 from app.agent.ship30 import (
     evaluate,
@@ -286,6 +294,35 @@ class Orchestrator:
         #      whose markers belong to the document, not the message.
         extraction = extract_artifacts(raw)
         if extraction.artifacts:
+            # Replace the model's self-written source list with a real one.
+            # Asked to "list each cited episode and guest", it emits bare
+            # markers — "S1, S2, S3" — because it does not reliably know the
+            # titles. Those are in the retrieved chunks, so the footer is built
+            # from them: real episode names, guests and timestamped links, which
+            # also makes a copied or downloaded artifact stand on its own.
+            for artifact in extraction.artifacts:
+                artifact.content = strip_bare_sources(artifact.content)
+                if not chunks:
+                    continue
+                cited = resolve_citations(artifact.content, chunks)
+                if not cited.citations:
+                    # A document with no resolvable markers is not verifiably
+                    # grounded, whatever it says. Same repair the answer path
+                    # uses: ask once for markers, change nothing else.
+                    repaired = await self._add_citations(artifact.content, chunks, system)
+                    if repaired:
+                        candidate = resolve_citations(repaired, chunks)
+                        if candidate.citations:
+                            cited = candidate
+                            yield ToolEvent(
+                                name="add_citations",
+                                args={"target": "artifact"},
+                                result_summary={"resolved": candidate.resolved},
+                            )
+                if cited.citations:
+                    artifact.content = cited.text + format_sources_footer(cited.citations)
+                else:
+                    log.warning("artifact_ungrounded", title=artifact.title[:60])
             result.artifacts = extraction.artifacts
             raw = extraction.text
             for artifact in extraction.artifacts:

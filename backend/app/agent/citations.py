@@ -101,7 +101,9 @@ def format_sources_footer(citations: Sequence[Dict[str, Any]]) -> str:
     """
     if not citations:
         return ""
-    lines = ["", "---", "**Sources**", ""]
+    # Two leading blank lines, not one: `text\n---` is setext syntax and turns
+    # the preceding line into an H2 rather than drawing a rule.
+    lines = ["", "", "---", "", "**Sources**", ""]
     for c in citations:
         guests = ", ".join(c.get("guests") or [])
         label = f"{c['title']}" + (f" — {guests}" if guests else "")
