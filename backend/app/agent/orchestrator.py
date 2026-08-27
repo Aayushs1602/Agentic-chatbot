@@ -27,6 +27,13 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from app.agent.artifacts import ParsedArtifact, extract_artifacts
 from app.agent.citations import CitationReport, resolve_citations
 from app.agent.router import Intent, Relevance, Route, check_relevance, route
+from app.agent.ship30 import (
+    evaluate,
+    plan_outline,
+    repair_prompt,
+    section_prompt,
+    takeaway_prompt,
+)
 from app.agent.skills import get_skills
 from app.config import settings
 from app.logging import get_logger
@@ -190,6 +197,13 @@ class Orchestrator:
             return
 
         # 4 ── Apply the skill and generate.
+        if routed.intent is Intent.ESSAY:
+            async for event in self._write_essay(
+                question, context, retrieved.chunks, result
+            ):
+                yield event
+            return
+
         skill_name = _SKILL_FOR_INTENT.get(routed.intent, "grounded-answer")
         skill = self.skills.get(skill_name)
         system = (
@@ -286,6 +300,132 @@ class Orchestrator:
             result.text = raw
 
         yield Completed(finish_reason=result.finish_reason, usage=result.usage)
+
+    async def _write_essay(
+        self,
+        topic: str,
+        context: str,
+        chunks: List[Any],
+        result: TurnResult,
+    ) -> AsyncIterator[Any]:
+        """Outline, then write section by section, then check and repair once.
+
+        One-shot generation of ~1,700 tokens measured ~73s on the 3B and lost
+        coherence well before the end. Each section here is ~300 tokens, which
+        is comfortably inside the range where the model stays on topic and on
+        its citations.
+        """
+        skill = self.skills.get("ship30-essay")
+        system = skill.render(context=context) if skill else _FALLBACK_SYSTEM.format(context=context)
+
+        outline = await plan_outline(self.provider, topic, context)
+        if outline is None:
+            # Planning failed; fall back to one-shot rather than losing the turn.
+            log.warning("ship30_fallback_single_shot")
+            async for event in self._generate(
+                [Message(role="user", content=topic)],
+                system=system, result=result, chunks=chunks,
+            ):
+                yield event
+            return
+
+        yield ToolEvent(
+            name="plan_outline",
+            args={},
+            result_summary={
+                "headline": outline.headline,
+                "sections": [s["heading"] for s in outline.sections],
+            },
+        )
+
+        parts: List[str] = [f"# {outline.headline}", "", outline.hook, ""]
+        # Emit the headline and hook immediately: the user watches the essay
+        # take shape instead of a spinner for a minute.
+        yield TextDelta("\n".join(parts))
+
+        for index in range(len(outline.sections)):
+            yield ToolEvent(
+                name="write_section",
+                args={"index": index + 1},
+                result_summary={
+                    "heading": outline.sections[index]["heading"],
+                    "of": len(outline.sections),
+                },
+            )
+            section_text = await self._collect(
+                [Message(role="user", content=section_prompt(outline, index, context))],
+                system=system,
+            )
+            if isinstance(section_text, StreamError):
+                result.error = {"code": section_text.code, "message": section_text.message}
+                yield section_text
+                return
+            parts.extend(["", section_text.strip(), ""])
+            yield TextDelta("\n\n" + section_text.strip())
+
+        # The closing TL;DR is its own move in the source material, and omitting
+        # it left the first run 160 words short of the rubric floor.
+        yield ToolEvent(name="write_takeaway", args={}, result_summary={})
+        takeaway = await self._collect(
+            [Message(role="user", content=takeaway_prompt(outline))], system=system
+        )
+        if not isinstance(takeaway, StreamError) and takeaway.strip():
+            parts.extend(["", takeaway.strip()])
+            yield TextDelta("\n\n" + takeaway.strip())
+
+        essay = "\n".join(parts).strip()
+
+        # The rubric — what makes this a skill rather than a prompt.
+        markers = [c.marker for c in chunks]
+        rubric = evaluate(essay, available_markers=markers)
+        yield ToolEvent(
+            name="check_rubric",
+            args={},
+            result_summary={
+                "passed": rubric.passed,
+                "words": rubric.word_count,
+                "citations": rubric.citation_count,
+                "failed": [c.name for c in rubric.failures],
+            },
+        )
+
+        if not rubric.passed:
+            repaired = await self._collect(
+                [Message(role="user", content=repair_prompt(essay, rubric, context))],
+                system=system,
+            )
+            if not isinstance(repaired, StreamError) and repaired.strip():
+                after = evaluate(repaired, available_markers=markers)
+                # Keep the repair only if it actually helped. A revision that
+                # fixes one check and breaks two is not an improvement.
+                if len(after.failures) < len(rubric.failures):
+                    essay, rubric = repaired.strip(), after
+                    yield ToolEvent(
+                        name="repair_essay",
+                        args={},
+                        result_summary={"passed": after.passed,
+                                        "remaining": [c.name for c in after.failures]},
+                    )
+
+        report = resolve_citations(essay, chunks)
+        result.text = report.text
+        result.citations = report.citations
+        result.finish_reason = "stop" if rubric.passed else "rubric_warnings"
+
+        # The essay streamed section by section; replace it with the verified
+        # whole, which may have been repaired and has invented markers stripped.
+        yield _ReplaceText(report.text)
+        yield Completed(finish_reason=result.finish_reason, usage=result.usage)
+
+    async def _collect(self, messages: List[Message], *, system: str):
+        """Run one non-streamed generation, returning text or a StreamError."""
+        buffer: List[str] = []
+        async for event in self.provider.stream_chat(messages, system=system):
+            if isinstance(event, TextDelta):
+                buffer.append(event.text)
+            elif isinstance(event, StreamError):
+                return event
+        return "".join(buffer)
 
     async def _abstain(
         self,
