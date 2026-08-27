@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://host.docker.internal:11434"
     ollama_model: str = "qwen2.5:3b-instruct-q4_K_M"
     ollama_num_ctx: int = 8192
+    # Keep the model resident in VRAM between requests. Measured cold-start
+    # on the target GPU is ~77s; without this, an idle demo pays it again.
+    ollama_keep_alive: str = "30m"
+    ollama_warmup: bool = True
     ollama_timeout_s: float = 120.0
     ollama_temperature: float = 0.3
 

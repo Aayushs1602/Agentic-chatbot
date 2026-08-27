@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health, search
+from app.api import chat, health, providers, search
 from app.config import settings
 from app.db import pool as db
+from app.agent.skills import get_skills
 from app.db.migrate import run_migrations
+from app.providers.registry import get_registry
 from app.errors import register_exception_handlers
 from app.logging import configure_logging, get_logger, new_request_id, set_request_id
 
@@ -40,9 +43,25 @@ async def lifespan(_: FastAPI):
             error=str(exc),
             hint="The API will start in a degraded state; see /readyz.",
         )
+    # Load skills eagerly so a malformed SKILL.md is a startup log line rather
+    # than a surprise on the first request that needs it.
+    get_skills().load()
+
+    # Warm the model in the background: cold-loading the 3B measured ~77s on the
+    # target GPU, and the first user request should not be the one that pays it.
+    # Backgrounded so a slow or absent Ollama never delays startup.
+    asyncio.create_task(_warmup())
+
     yield
     await db.close_pool()
     log.info("shutdown")
+
+
+async def _warmup() -> None:
+    try:
+        await get_registry().warmup_active()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("warmup_failed", error=str(exc))
 
 
 def create_app() -> FastAPI:
@@ -96,6 +115,8 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(search.router, prefix="/api")
+    app.include_router(providers.router, prefix="/api")
+    app.include_router(chat.router, prefix="/api")
 
     return app
 
