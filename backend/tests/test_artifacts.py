@@ -119,3 +119,96 @@ class TestNoArtifact:
 
     def test_empty_input(self):
         assert extract_artifacts("").artifacts == []
+
+
+class TestKindWeighing:
+    """A single HTML tag must not make a markdown document "HTML".
+
+    Reported from real use: the model opened with `<h1>Q3 Growth Review</h1>`
+    and wrote everything else in markdown. Classified as HTML, so every `##`,
+    `- ` and `**bold**` rendered as literal characters in the viewer.
+    """
+
+    MOSTLY_MARKDOWN = (
+        "<h1>Enterprise Sales</h1>\n\n"
+        "### The playbook\n\n"
+        "Key points:\n"
+        "- **Vision casting:** sell to a gap [S1]\n"
+        "- **Differentiation:** matters [S2]\n"
+        "- **Founder-led sales:** first [S3]\n"
+    )
+    REAL_HTML = (
+        "<style>.card{padding:8px}</style>"
+        "<div class='card'><h1>Q3</h1>"
+        "<table><tbody><tr><td>Retention</td></tr></tbody></table></div>"
+    )
+
+    def test_mostly_markdown_is_markdown(self):
+        reply = f'{F}artifact {{"kind": "html"}}\n{self.MOSTLY_MARKDOWN}\n{F}'
+        assert extract_artifacts(reply).artifacts[0].kind == "markdown"
+
+    def test_a_real_html_document_is_still_html(self):
+        reply = f"{F}artifact\n{self.REAL_HTML}\n{F}"
+        assert extract_artifacts(reply).artifacts[0].kind == "html"
+
+    def test_stray_tags_become_markdown(self):
+        # react-markdown runs with raw HTML disabled, so an unconverted <h1>
+        # would have its text silently deleted rather than rendered.
+        content = extract_artifacts(
+            f"{F}artifact\n{self.MOSTLY_MARKDOWN}\n{F}"
+        ).artifacts[0].content
+        assert "<h1>" not in content
+        assert "# Enterprise Sales" in content
+        assert "### The playbook" in content
+
+
+class TestDuplicateChatCopy:
+    """Models write the document twice — once as chat, once in the envelope."""
+
+    DOC = (
+        "# Enterprise Sales\n\n"
+        "- **Vision casting:** sell to a gap [S1]\n"
+        "- **Differentiation:** matters [S2]\n\n"
+        "Jen Abel explains that founders should sell first and hire later, and "
+        "that the best clients do not ask for a discount on price."
+    )
+
+    def test_duplicate_copy_is_dropped_from_chat(self):
+        reply = f'Here is the one-pager.\n\n{self.DOC}\n\n{F}artifact {{"kind":"markdown"}}\n{self.DOC}\n{F}'
+        result = extract_artifacts(reply)
+        assert len(result.artifacts) == 1
+        assert result.text == ""
+
+    def test_a_covering_sentence_survives(self):
+        reply = f'Here is the one-pager you asked for.\n\n{F}artifact {{"kind":"markdown"}}\n{self.DOC}\n{F}'
+        assert extract_artifacts(reply).text == "Here is the one-pager you asked for."
+
+    def test_unrelated_prose_survives(self):
+        prose = (
+            "I found three relevant episodes and pulled the strongest points from "
+            "each of them, focusing on what applies before a first sales hire, "
+            "since that is where the guidance is most consistent across guests."
+        )
+        reply = f'{prose}\n\n{F}artifact {{"kind":"markdown"}}\n{self.DOC}\n{F}'
+        assert extract_artifacts(reply).text == prose
+
+
+class TestFenceLeftovers:
+    """Stray backticks in the chat read as a bug to anyone looking at it."""
+
+    DOC = "# Sales\n\n- point one [S1]\n- point two [S2]\n"
+
+    def test_multi_backtick_run_is_stripped(self):
+        # Observed live: chat text came through as ``````` after the model
+        # wrapped the envelope in a second fence.
+        reply = f'{F}{F}artifact {{"kind":"markdown"}}\n{self.DOC}\n{F}{F}'
+        result = extract_artifacts(reply)
+        assert "`" not in result.text
+
+    def test_fence_only_remainder_becomes_empty(self):
+        reply = f'{F}\n{F}artifact\n{self.DOC}\n{F}\n{F}'
+        assert extract_artifacts(reply).text == ""
+
+    def test_real_text_around_fences_survives(self):
+        reply = f'Here you go.\n{F}artifact\n{self.DOC}\n{F}'
+        assert extract_artifacts(reply).text == "Here you go."

@@ -15,21 +15,33 @@ chat instead of appearing as a wall of code.
 Emit exactly this, with nothing after the closing fence:
 
 ````
-```artifact {"kind": "html", "title": "Q3 Growth Review"}
-<h1>Q3 Growth Review</h1>
-...
+```artifact {"kind": "markdown", "title": "<a short title for THIS document>"}
+<the document>
 ```
 ````
 
-- `kind` is `"html"` or `"markdown"`.
-- `title` is a short noun phrase — it labels the viewer tab.
+- `kind` is `"markdown"` or `"html"`. **Default to `markdown`** — see below.
+- `title` describes *this* document. Never copy the placeholder above; a title
+  that does not match the content is worse than no title.
 - Write one or two sentences of chat before the block saying what you made.
-  Do not repeat the document's contents in the chat.
+  **Write the document once, inside the fence.** Do not also paste it into the
+  chat — it renders in its own panel, and a second copy is pure noise.
+
+## Do not mix the two formats
+
+Pick one and write the whole document in it. The single most common failure here
+is opening with `<h1>Some Title</h1>` and then writing everything else in
+markdown. The result renders as literal `##` and `- ` characters on screen.
+
+If you choose markdown, use `#` headings — not `<h1>`. If you choose HTML, use
+`<h1>` and `<ul><li>` — not `#` and `- `.
 
 ## Choosing the format
 
 **Markdown** for anything primarily read in order: briefs, checklists, meeting
-notes, summaries, plans. It is the default — pick it unless layout is the point.
+notes, summaries, plans, one-pagers. **This is the default.** Choose it unless
+visual layout is genuinely the point — it is easier to write correctly and it
+renders well without any styling effort.
 
 **HTML** when structure carries meaning: comparison tables, dashboards, scorecards,
 side-by-side layouts, anything with visual hierarchy.
