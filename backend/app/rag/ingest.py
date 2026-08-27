@@ -27,6 +27,7 @@ import hashlib
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -36,7 +37,7 @@ from app.config import settings
 from app.db import pool as db
 from app.db.migrate import run_migrations
 from app.logging import configure_logging, get_logger
-from app.rag.chunker import chunk_transcript
+from app.rag.chunker import chunk_transcript, looks_like_ad
 from app.rag.embeddings import get_embedder
 
 log = get_logger("ingest")
@@ -257,6 +258,16 @@ async def ingest(
                 target_tokens=settings.chunk_tokens,
                 overlap_tokens=settings.chunk_overlap,
             )
+            # Drop sponsor reads before embedding. They are dense marketing copy
+            # that retrieves well for business vocabulary and crowds out real
+            # answers; see chunker.looks_like_ad for why the test is strict.
+            kept = [p for p in pieces if not looks_like_ad(p.text)]
+            dropped = len(pieces) - len(kept)
+            if dropped:
+                log.info("ad_chunks_dropped", slug=episode["slug"], dropped=dropped)
+            # Re-number so `ord` stays contiguous and the UNIQUE(episode_id, ord)
+            # constraint holds after removals.
+            pieces = [replace(p, ord=i) for i, p in enumerate(kept)]
             if not pieces:
                 log.warning("episode_empty", slug=episode["slug"])
                 continue

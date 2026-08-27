@@ -46,6 +46,58 @@ _SPEAKER_RE = re.compile(
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'“])")
 
 
+# Sponsor reads. Every episode carries one or two, they are dense marketing copy
+# in exactly the business vocabulary this corpus gets queried with, and they
+# retrieve alarmingly well — a Vanta ad scored 0.710 as the top source for
+# "hiring your first product manager". Removing them is a real precision win.
+#
+# These rules were derived by measuring against the live index, not guessed. An
+# earlier version required an opener ("brought to you by") and a call to action
+# in the same chunk; at 400 tokens an ad read spans several chunks, so it
+# matched 0 of 277 sponsor passages. The signals below flag 264 of 7,977 chunks
+# (~3%), and manual inspection of both sides of the boundary showed clean
+# separation.
+_VANITY_URL_RE = re.compile(r"\b[a-z0-9-]+\.(?:com|io|ai|co)\s*/\s*lenny\b", re.I)
+
+_CTA_PATTERNS = [
+    re.compile(p, re.I)
+    for p in (
+        r"brought to you by",
+        r"thank you to our sponsor",
+        r"sponsored by",
+        r"head over to",
+        r"sign up (?:for|at|today)",
+        r"limited[- ]time offer",
+        r"use code",
+        r"get started today",
+        r"\d+% off",
+        r"claim (?:your|the) discount",
+        r"visit \w+\.com",
+        r"go to \w+\.com",
+        r"try .{0,20} free",
+        r"listeners get",
+    )
+]
+
+
+def looks_like_ad(text: str) -> bool:
+    """True when a passage is a sponsor read rather than conversation.
+
+    Two independent routes, because sponsor reads are chunked inconsistently:
+
+    * a sponsor vanity URL (``vanta.com/lenny``) — near-certain, since these
+      exist only in ad copy;
+    * two or more call-to-action signals in one passage.
+
+    One CTA alone is deliberately not enough: a guest saying "go to stripe.com"
+    or "sign up for our beta" is real content, and a false positive silently
+    deletes knowledge with no error anywhere.
+    """
+    if _VANITY_URL_RE.search(text):
+        return True
+    return sum(1 for pattern in _CTA_PATTERNS if pattern.search(text)) >= 2
+
+
 @dataclass(frozen=True)
 class Chunk:
     ord: int
@@ -147,12 +199,29 @@ def chunk_transcript(
 
         if end >= total:
             break
-        next_start = start + step
-        # Guarantee forward progress even if `_snap` pulled the boundary back
-        # behind the nominal step — otherwise a pathological transcript loops.
-        start = max(next_start, start + 1) if next_start <= start else next_start
+        # Snap the START to a boundary too, not just the end. Advancing by raw
+        # arithmetic makes every chunk after the first begin mid-word ("ith
+        # external stakeholders"), which corrupts both the embedding and the
+        # quoted text a citation shows the user.
+        start = _snap_start(boundaries, start + step, after=start)
 
     return chunks
+
+
+def _snap_start(boundaries: List[int], target: int, *, after: int) -> int:
+    """Boundary nearest `target` that still moves forward past `after`."""
+    import bisect
+
+    idx = bisect.bisect_left(boundaries, target)
+    best = None
+    for candidate in boundaries[max(0, idx - 1) : idx + 2]:
+        if candidate <= after:
+            continue
+        if best is None or abs(candidate - target) < abs(best - target):
+            best = candidate
+    # No usable boundary: fall back to the arithmetic step, still guaranteeing
+    # progress so a pathological transcript cannot loop forever.
+    return best if best is not None else max(target, after + 1)
 
 
 def _snap(boundaries: List[int], ideal_end: int, start: int, window: int) -> int:

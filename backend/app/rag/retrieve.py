@@ -359,7 +359,7 @@ def format_context(chunks: List[RetrievedChunk], *, max_chars: int = 12000) -> s
     parts: List[str] = []
     budget = max_chars
     for chunk in chunks:
-        header = f"[{chunk.marker}] {chunk.episode_title}"
+        header = chunk.episode_title
         if chunk.guests:
             header += f" — {', '.join(chunk.guests)}"
         body = chunk.text

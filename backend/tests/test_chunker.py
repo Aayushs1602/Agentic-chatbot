@@ -106,3 +106,69 @@ class TestChunking:
         chunks = chunk_transcript(text, target_tokens=100, overlap_tokens=20)
         assert len(chunks) > 1
         assert all(isinstance(c, Chunk) for c in chunks)
+
+    def test_chunks_start_at_a_word_boundary(self):
+        # Regression: chunk starts were advanced by raw arithmetic while only
+        # the end snapped to a boundary, so every chunk after the first began
+        # mid-word ("ith external stakeholders") — corrupting both the embedding
+        # and the quoted text shown in a citation.
+        text = ". ".join(f"Sentence number {i} carries meaningful content" for i in range(400))
+        chunks = chunk_transcript(text, target_tokens=150, overlap_tokens=30)
+        assert len(chunks) > 3
+        for c in chunks[1:]:
+            preceding = text[c.start_char - 1] if c.start_char > 0 else " "
+            first = c.text[0]
+            assert not (preceding.isalnum() and first.isalnum()), (
+                f"chunk {c.ord} starts mid-word: {c.text[:40]!r}"
+            )
+
+    def test_speaker_turns_are_preferred_chunk_starts(self, sample_transcript):
+        long = sample_transcript * 6
+        chunks = chunk_transcript(long, target_tokens=120, overlap_tokens=25)
+        starts_clean = sum(
+            1 for c in chunks[1:] if c.text[:1].isupper() or c.text[:1] == "["
+        )
+        assert starts_clean >= len(chunks[1:]) // 2
+
+
+class TestAdDetection:
+    """Sponsor reads retrieve well for business vocabulary and crowd out real
+    answers. These rules were derived by measuring against the live index — an
+    earlier guess matched 0 of 277 real sponsor passages."""
+
+    def test_vanity_url_is_an_ad(self):
+        from app.rag.chunker import looks_like_ad
+
+        assert looks_like_ad("See why teams call it a game changer. Visit whimsical.com/lenny today.")
+
+    def test_two_cta_signals_is_an_ad(self):
+        from app.rag.chunker import looks_like_ad
+
+        assert looks_like_ad(
+            "This episode is brought to you by Vanta. For a limited time offer, "
+            "Lenny's listeners get $1,000 off."
+        )
+
+    def test_one_cta_signal_alone_is_not_an_ad(self):
+        from app.rag.chunker import looks_like_ad
+
+        # A guest naming a company is real content; a false positive silently
+        # deletes knowledge with no error anywhere.
+        assert not looks_like_ad("We told everyone to go to stripe.com and it worked.")
+        assert not looks_like_ad("You want people who sign up for the beta early.")
+
+    def test_ordinary_conversation_is_not_an_ad(self):
+        from app.rag.chunker import looks_like_ad
+
+        assert not looks_like_ad(
+            "Hiring your first PM is about finding someone who can own outcomes "
+            "end to end, not someone who writes tickets."
+        )
+
+    def test_genuine_sponsor_discussion_is_kept(self):
+        from app.rag.chunker import looks_like_ad
+
+        assert not looks_like_ad(
+            "I actually think Vanta is a well-built product — we adopted it "
+            "internally long before they sponsored anything."
+        )
