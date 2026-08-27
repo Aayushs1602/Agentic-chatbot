@@ -270,6 +270,40 @@ def cap_per_episode(chunks: List[RetrievedChunk], max_per_episode: int) -> List[
     return out
 
 
+_NEIGHBOUR_SQL = """
+SELECT c.text
+FROM chunks c
+WHERE c.episode_id = $1::uuid
+  AND c.ord BETWEEN ($2::int - $3::int) AND ($2::int + $3::int)
+ORDER BY c.ord
+"""
+
+
+async def widen_to_parents(chunks: List[RetrievedChunk], window: int) -> None:
+    """Widen each hit in place to include its neighbouring chunks.
+
+    Parent-child retrieval: match on small chunks, which keeps the embedding
+    precise, then show the model the surrounding conversation, which is what
+    makes a mid-discussion excerpt judgeable. `(episode_id, ord)` already
+    encodes the parent structure, so this needs no schema change and no
+    re-ingest.
+
+    Only `.text` changes. The chunk keeps its own id, marker, and
+    `start_seconds`, so citations and timestamp deep links still point at the
+    passage that actually matched.
+    """
+    if window <= 0:
+        return
+    for chunk in chunks:
+        try:
+            rows = await db.fetch(_NEIGHBOUR_SQL, chunk.episode_id, chunk.ord, window)
+        except Exception as exc:  # noqa: BLE001 — widening is an enhancement
+            log.warning("parent_widen_failed", chunk=chunk.chunk_id, error=str(exc))
+            continue
+        if rows:
+            chunk.text = " ".join(r["text"] for r in rows)
+
+
 async def retrieve(
     query: str,
     *,
@@ -312,6 +346,10 @@ async def retrieve(
 
     for i, chunk in enumerate(selected, start=1):
         chunk.marker = f"S{i}"
+
+    # Widen after selection, so ranking is done on the precise chunks and only
+    # what the model reads gets bigger.
+    await widen_to_parents(selected, settings.retrieval_parent_window)
 
     result = RetrievalResult(
         chunks=selected,

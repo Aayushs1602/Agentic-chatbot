@@ -203,3 +203,42 @@ because the guidance is explicit, the cost is zero, and the margin narrows as
 the corpus grows. This system has already been bitten twice by silent recall
 loss (§1 truncation, §3 AND-vs-OR), which is reason enough to close a third
 opening before it matters.
+
+## 7. Parent-child chunking was tested and rejected
+
+"Small-to-big" retrieval — match on small chunks for precision, then widen each
+hit to include its neighbours before the model reads it — is the standard next
+move after a reranker, and it needed no schema change here: `(episode_id, ord)`
+already encodes the parent structure, so widening is a neighbour lookup.
+
+A nine-case probe against the relevance gate looked promising:
+
+| Window | Correct |
+|---|---:|
+| base (no widening) | 7/9 |
+| **w = 1** | **8/9** |
+| w = 2 | 5/9 |
+
+On the full golden set it **fell from 80% to 60%**.
+
+The interesting part is that it is not a uniform loss. Widening **fixed all
+three** cases that were failing — `first-pm-hire`, `pm-interview`,
+`roadmap-prioritization` — exactly as the probe predicted. It then **broke
+four** that were passing.
+
+**The likely mechanism is a bug in how the two interact, not in the idea.** The
+relevance judge reads a digest: the first ~420 characters of each passage. After
+widening, those first 420 characters are the *preceding neighbour's* text, not
+the chunk that actually matched — so the judge is shown the wrong part of every
+source. The failure timings support it: the broken cases refused in 3.8–4.6
+seconds, far too fast to have read anything useful.
+
+Making this work would mean carrying two texts per chunk — the matched span for
+judging, the widened span for generating — and re-tuning `top_k`, since eight
+widened passages exceed the 8,192-token context and Ollama truncates silently
+(§1). That is a real piece of work, not a flag flip, and it is the third
+plausible improvement this project has rejected on measurement rather than
+shipped on intuition.
+
+`RETRIEVAL_PARENT_WINDOW` remains in the code, defaulting to 0, so the finding
+can be reproduced with one environment variable.

@@ -76,6 +76,16 @@ class Settings(BaseSettings):
     retrieval_max_per_episode: int = 3
     retrieval_rrf_k: int = 60
     retrieval_min_sim: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Parent-child ("small-to-big") retrieval: match on small chunks, then
+    # widen each hit by N neighbouring chunks before the model sees it.
+    #
+    # Default 0 — OFF, on measurement. At window=1 the golden set fell from 80%
+    # to 60%. It is not a uniform loss: it fixed all three cases that were
+    # failing, and broke four that were passing. See
+    # docs/retrieval-calibration.md §7 for the likely mechanism and what would
+    # have to change to make it work. Kept behind the flag because it is tested
+    # and the finding is worth being able to reproduce.
+    retrieval_parent_window: int = Field(default=0, ge=0, le=3)
 
     # ── Corpus ──────────────────────────────────────────────────────────
     transcripts_repo: str = "https://github.com/ChatPRD/lennys-podcast-transcripts"
