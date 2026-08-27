@@ -1,0 +1,82 @@
+# The Lenny Growth Assistant
+#
+#   docker compose up -d --build      # db + backend
+#   docker compose --profile ollama up -d   # ...plus a containerised Ollama (Linux/CPU)
+#
+# Ollama normally runs on the HOST so it can use the GPU; the backend reaches it
+# via host.docker.internal (see extra_hosts below). The `ollama` profile exists
+# only for evaluators who would rather not install it, and is CPU-only.
+
+name: lenny-growth-assistant
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: lenny-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lenny}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lenny}
+      POSTGRES_DB: ${POSTGRES_DB:-lenny}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Gate the backend on the DB actually accepting queries, not just the
+      # port being open — otherwise migrations race the first connection.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lenny} -d ${POSTGRES_DB:-lenny}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lenny-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Override the .env value: inside the network the DB host is `db`.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lenny}:${POSTGRES_PASSWORD:-lenny}@db:5432/${POSTGRES_DB:-lenny}
+    extra_hosts:
+      # Lets the container reach an Ollama running on the host. Native on
+      # Docker Desktop; this line is what makes it work on Linux too.
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Cloned transcripts + fastembed ONNX weights persist across rebuilds,
+      # so re-ingesting doesn't re-download ~200MB every time.
+      - corpus:/data
+      - fastembed_cache:/home/app/.cache/fastembed
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz',timeout=3).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # Optional, CPU-only. Enable with: docker compose --profile ollama up -d
+  # Prefer a host-installed Ollama when you have a GPU.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: lenny-ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+volumes:
+  pgdata:
+  corpus:
+  fastembed_cache:
+  ollama_models:

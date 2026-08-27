@@ -1,0 +1,40 @@
+# Secrets — never commit
+.env
+.env.local
+*.pem
+*.key
+
+# Corpus (cloned at ingest time, ~200MB)
+data/
+backend/data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Model caches (fastembed downloads ONNX weights here)
+.fastembed_cache/
+backend/.fastembed_cache/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local state (agent transcripts are exported+redacted into agent-transcripts/)
+.claude/settings.local.json
