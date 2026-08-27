@@ -38,8 +38,21 @@ authority it hasn't earned. **The product's core promise is therefore not "answe
 ### Success metrics
 
 **Primary (product): grounded-answer rate.**
-≥ 90% of in-corpus questions return at least one *resolved* citation, and 5/5
-deliberately out-of-corpus questions are refused rather than answered.
+Target: ≥ 90% of in-corpus questions return at least one *resolved* citation,
+and 5/5 deliberately out-of-corpus questions are refused rather than answered.
+
+**Measured: 12/15 (80%) grounded, 5/5 refused, median latency 29 s.**
+Run it yourself with `make evaluate` — it takes about 13 minutes.
+
+The refusal target is met. The grounded target is **not**, and the gap is
+reported rather than tuned away. Progression across the build was 60% → 67% →
+73% → 80%, each step driven by a measurement in
+[`retrieval-calibration.md`](retrieval-calibration.md) §4. The three remaining
+failures are relevance-gate refusals on questions the corpus does cover, and the
+diagnosis is specific: the 3B judge degrades as its input grows. That is a real
+constraint of running a 3-billion-parameter model on a 4 GB GPU, not a
+mystery — and naming it is more useful to whoever picks this up than a number
+that cannot be reproduced.
 
 Measured against a 20-question golden set (`backend/tests/data/golden_set.json`),
 which doubles as a regression fixture. "Resolved" means the marker maps to a
@@ -53,7 +66,7 @@ This is the metric that makes the thing usable by anyone other than its author,
 and it is what `make bootstrap` and `/readyz` exist to protect.
 
 **Deliberately not a metric:** answer latency. On a 4 GB GPU a grounded answer
-takes 5–15 seconds and an essay ~150. Optimising that would mean a smaller model
+takes ~30 seconds (median, measured) and an essay ~150. Optimising that would mean a smaller model
 or less retrieval, both of which trade away the primary metric.
 
 ### Assumptions
@@ -82,14 +95,14 @@ keep moving, and each is cheap to revisit.
 5. Sandboxed artifact viewer with a visible security report
 6. Three model providers with a UI toggle and fallback
 7. One-command startup, structured logs, health and readiness endpoints
-8. 231 tests that run with no Ollama and no keys
+8. 243 tests that run with no Ollama and no keys
 
 **Out, and why:**
 
 | Excluded | Reasoning |
 |---|---|
 | Authentication | Assumption 1. A cookie scopes the session list; that is enough for a team tool and doesn't pretend to be a security boundary. |
-| Cross-encoder reranking | RRF is good enough at 18.8k passages. A reranker adds a 400 MB model and ~2 s/query for gains this corpus doesn't need yet. First thing to add. |
+| Cross-encoder reranking | **Tested and rejected on measurement**, not deferred. Latency was affordable (40 pairs in 0.95–1.8 s on CPU), but both `ms-marco-MiniLM-L-6-v2` and `jina-reranker-v1-turbo-en` *demoted* the correct episode on `career-ic-vs-manager` and promoted unrelated ones. They are MS MARCO-trained on short factoid passages; a 400-token chunk of conversation is a different distribution and they have no calibration for it. See [`retrieval-calibration.md`](retrieval-calibration.md) §5. |
 | Cloud deployment | The brief asks for a local deployment, and Ollama cannot run on a free tier. Local is both the requirement and the $0 answer. |
 | Live Claude Agent SDK verification | Zero-cost constraint; no Anthropic credit. Implemented and fixture-tested, flagged as unverified in the README. |
 | Multi-turn artifact editing | Doubles artifact scope for a feature not asked for. Versioning exists in the schema. |
@@ -103,7 +116,7 @@ keep moving, and each is cheap to revisit.
 
 1. User asks a question.
 2. **Route** — intent classified from user text *only*, before retrieval.
-3. **Retrieve** — hybrid search, top 5 passages, max 3 per episode.
+3. **Retrieve** — hybrid search, top 8 passages, max 3 per episode.
 4. **Check relevance** — the model judges whether those passages answer the
    question. This is the abstain gate; see §4.
 5. **Generate** — the `grounded-answer` skill, with passages as delimited data.
@@ -142,15 +155,15 @@ was missing. No LLM freelancing.
 | # | Criterion | Status |
 |---|---|---|
 | 1 | `docker compose up` + one ingest command produces a working system | ✅ |
-| 2 | Answers cite episodes with working timestamp deep links | ✅ |
-| 3 | Out-of-corpus questions are refused, not answered | ✅ |
+| 2 | Answers cite episodes with working timestamp deep links | ✅ 12/15 measured |
+| 3 | Out-of-corpus questions are refused, not answered | ✅ 5/5 measured |
 | 4 | Sessions keep independent context | ✅ tested |
 | 5 | Provider switchable in the UI without code changes | ✅ |
 | 6 | Unavailable provider degrades with a reason and a fix, no crash | ✅ |
 | 7 | ~1,250-word essay with the source's principles applied | ✅ 1,142 words, 4 citations |
 | 8 | Artifacts render beside the chat, not as raw code | ✅ |
 | 9 | Malicious HTML neutralised **and** the removal explained | ✅ 26 payloads |
-| 10 | Tests pass with no Ollama and no keys | ✅ 231 |
+| 10 | Tests pass with no Ollama and no keys | ✅ 243 |
 | 11 | Every failure returns a structured error with a `request_id` | ✅ |
 
 ---
@@ -189,10 +202,10 @@ Full evidence: [`retrieval-calibration.md`](retrieval-calibration.md).
 | Risk | Severity | Mitigation | Residual |
 |---|---|---|---|
 | **Hallucination** | High | Relevance gate + citation resolution + answer replaced if nothing resolves | A 3B can still misread a passage it correctly cites. Deep links let the user check. |
-| **3B output quality** | High | Outline-then-sections, rubric, repair pass | Emphasis check often fails; ships with a visible warning |
+| **3B output quality** | High | Outline-then-sections, rubric, citation repair pass | Emphasis check often fails; ships with a visible warning. The relevance judge also degrades as its input grows — the cause of the remaining 3 failures. |
 | **Untrusted artifact HTML** | High | Allowlist + sandboxed frame + CSP, 26 payloads tested | Accepted |
 | **Prompt injection via transcripts** | Medium | Passages delimited as data; routing decided *before* retrieval so content can't select tools | A guest could still influence answer *content*; citations make it traceable |
-| **Retrieval misses** | Medium | Hybrid dense+sparse, `/api/search` to diagnose | No reranker yet |
+| **Retrieval misses** | Medium | Hybrid dense+sparse, widened funnel, `/api/search` to diagnose | 3/15 golden questions still refused; off-the-shelf reranking made it worse, not better |
 | **Ad copy polluting the index** | Medium | Sponsor detection, measured at 303/9,112 chunks | Rules are heuristic; `prune_ads.py --dry-run` to re-tune |
 | **Cold start latency** | Low | `keep_alive` + startup warmup | First boot still loads the model |
 | **Corpus drift** | Low | Content-hashed idempotent re-ingest | Not scheduled; manual or cron |

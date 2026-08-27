@@ -112,7 +112,7 @@ Show the calibration doc.
 ### 2:50–3:00 — Close
 
 > "Clone, `docker compose up`, one ingest command, and you're asking questions
-> in under ten minutes. 231 tests that run with no model and no keys. Everything
+> in under ten minutes. 243 tests that run with no model and no keys. Everything
 > — the PRD, the architecture, the calibration data, and the agent transcripts
 > including what went wrong — is in the repo."
 

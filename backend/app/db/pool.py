@@ -23,7 +23,7 @@ _pool: Optional[asyncpg.Pool] = None
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
-    """Register codecs so jsonb round-trips as dict/list instead of str."""
+    """Per-connection setup: jsonb codecs, and the HNSW search width."""
     for typename in ("json", "jsonb"):
         await conn.set_type_codec(
             typename,
@@ -31,6 +31,26 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
             decoder=json.loads,
             schema="pg_catalog",
         )
+
+    # pgvector's hnsw.ef_search defaults to 40 and its guidance is that it
+    # should be at least the query's LIMIT — we ask for RETRIEVAL_CANDIDATES
+    # (80) per retriever, so the default is below the recommendation.
+    #
+    # Measured at the current corpus size (18.8k vectors), recall@80 against a
+    # brute-force ground truth is 100% even at the default, so this changes
+    # nothing today. It is set anyway because the guidance is explicit, the
+    # cost is zero, and the margin narrows as the corpus grows — a silent
+    # recall drop is exactly the kind of failure this system has already been
+    # bitten by twice.
+    #
+    # The GUC only exists once pgvector's library is loaded into the session,
+    # so a fresh connection can legitimately not have it yet.
+    try:
+        await conn.execute(
+            f"SET hnsw.ef_search = {max(64, settings.retrieval_candidates * 2)}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("hnsw_ef_search_not_set", error=str(exc))
 
 
 async def create_pool() -> asyncpg.Pool:

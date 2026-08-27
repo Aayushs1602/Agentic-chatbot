@@ -122,3 +122,84 @@ densely, so ranking survives the looser matching.
 
 The calibration script prints a `WARNING dense-only queries` line if this ever
 regresses, and `TestSparseQueryBuilder` covers the term-building rules.
+
+---
+
+## 4. Tuning the retrieval funnel
+
+The golden set was run end to end (`python -m scripts.evaluate`) after each
+change. The metric is the PRD's: in-corpus questions returning at least one
+*resolved* citation, and out-of-corpus questions refused.
+
+| Change | Grounded | Refusal | Median latency |
+|---|---:|---:|---:|
+| Baseline | 9/15 (60%) | 4/5 | 23 s |
+| + chitchat routing fix, citation repair pass | 10/15 (67%) | **5/5** | 23 s |
+| + relevance reframe (§2), search-query cleaning | 11/15 (73%) | 5/5 | 24 s |
+| + candidates 40→80, top-k 5→8, rewrite gating | **12/15 (80%)** | 5/5 | 29 s |
+
+Four measured findings behind those rows:
+
+**Out-of-corpus questions were being routed as chitchat**, which skips retrieval
+and grounding entirely — the one path by which an ungrounded claim reaches the
+user. Fixing the router's chitchat definition took refusal from 4/5 to 5/5.
+
+**The model writes faithful answers and omits the citation markers.** That
+accounted for as many failures as genuinely ungrounded output. A narrow repair
+pass — "add markers, change nothing else" — recovers them; measured live it
+turned a 0-citation answer into 3 resolved citations in 3.1 s.
+
+**The router was padding the search query.** "Should I stay an individual
+contributor or move into management" came back as "...management product growth
+metrics strategy", and those appended category words pulled the embedding off
+the question. The rewrite now runs *only* when the message contains a reference
+to resolve ("expand on that"); a self-contained question is already the best
+query available.
+
+**Widening the funnel flipped three failures to passes** — `retention-curve`,
+`growth-loops` and `career-ic-vs-manager` all recovered. But it flipped two the
+other way: `first-pm-hire` and `pm-interview` began failing as fast abstains at
+the relevance gate. Eight passages makes the gate's digest ~3,400 characters,
+and the 3B judges *worse* with more to read. More context, weaker judgment.
+
+## 5. A cross-encoder reranker was tested and rejected
+
+Reranking was the obvious next move, and named in the PRD as the first thing to
+add. It was benchmarked before being built, and the measurement says no.
+
+Throughput was never the problem — 40 query/passage pairs on CPU:
+
+| Model | 40 pairs | Rate |
+|---|---:|---:|
+| `jinaai/jina-reranker-v1-tiny-en` | 0.95 s | 42 pairs/s |
+| `Xenova/ms-marco-MiniLM-L-6-v2` | 1.40 s | 29 pairs/s |
+| `jinaai/jina-reranker-v1-turbo-en` | 1.83 s | 22 pairs/s |
+
+**Quality was.** On `career-ic-vs-manager`, RRF correctly surfaced *"Building a
+long and meaningful career | Nikhyl Singhal"* — the exactly-right episode, which
+discusses staying an IC versus moving to management. Both rerankers **demoted
+it** out of the top 3 and promoted Marty Cagan episodes on process and product
+theatre instead.
+
+The tell is in the scores: every passage came back negative
+(`jina-turbo`: −0.17 to −0.95). These are MS MARCO-trained rerankers, calibrated
+on short factoid web passages. A 400-token chunk of two people talking is a
+different distribution entirely, and the model has no useful signal on it.
+
+So no reranker ships. This is a *measured* recommendation rather than a deferred
+one: the honest next step is a reranker fine-tuned on conversational transcripts,
+or an LLM-as-reranker pass — not an off-the-shelf cross-encoder.
+
+## 6. HNSW search width
+
+`hnsw.ef_search` defaults to 40 while the dense query asks for
+`RETRIEVAL_CANDIDATES` (80) per retriever, so the default sits below pgvector's
+own guidance of `ef_search >= LIMIT`.
+
+Measured against brute-force ground truth at the current corpus size,
+**recall@80 is 100% at the default** — the graph is small enough that 40 finds
+everything. It is set to `max(64, candidates × 2)` per connection anyway,
+because the guidance is explicit, the cost is zero, and the margin narrows as
+the corpus grows. This system has already been bitten twice by silent recall
+loss (§1 truncation, §3 AND-vs-OR), which is reason enough to close a third
+opening before it matters.

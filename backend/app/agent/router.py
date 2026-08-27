@@ -70,9 +70,19 @@ Intents:
   an information request there is the one way an ungrounded claim reaches the
   user.
 
-Also produce search_query: a standalone search query for the transcript corpus.
-Resolve pronouns using the conversation so far — if the user says "expand on
-that", search_query must name what "that" was. For chitchat, use an empty string.
+Also produce search_query: the user's question, rewritten to stand on its own.
+
+- Resolve pronouns from the conversation. If the user says "expand on that",
+  name what "that" was.
+- Keep it to the SUBJECT ONLY. Never add words describing where it will be
+  searched — no "podcast", "transcript", "episode", "guests say". Those words
+  are in every document in the corpus, so adding them tells the retriever
+  nothing and drags the embedding away from the actual topic.
+- Never append instruction fragments like "expand on that" or "in detail".
+- For chitchat, use an empty string.
+
+Good:  "how to know when you have product-market fit"
+Bad:   "product-market fit signals podcast transcript expand on that"
 
 Respond with JSON only."""
 
@@ -93,6 +103,45 @@ _CHITCHAT_RE = re.compile(
     re.I,
 )
 _ESSAY_RE = re.compile(r"\b(ship\s*30|atomic essay|write .{0,20}essay|blog post)\b", re.I)
+
+# Terms that describe the corpus rather than the topic. Every document contains
+# them, so they carry no retrieval signal and actively pull the query embedding
+# away from the subject. The prompt asks the model not to emit these; this
+# removes them anyway, because a prompt is a request and this is a guarantee.
+_QUERY_NOISE_RE = re.compile(
+    r"\b(?:podcast|podcasts|transcript|transcripts|episode|episodes|"
+    r"guests?\s+say|lenny'?s?|in\s+the\s+corpus|expand\s+on\s+that|"
+    r"tell\s+me\s+more|in\s+detail)\b",
+    re.I,
+)
+
+
+# Words that make a question depend on earlier turns. Only these need the model
+# to rewrite the query; a self-contained question is already the best query it
+# could produce.
+_ANAPHORA_RE = re.compile(
+    r"\b(that|this|those|these|it|its|they|them|he|she|his|her|"
+    r"above|previous|earlier|instead|also|too|more|again)\b",
+    re.I,
+)
+
+
+def needs_rewrite(message: str) -> bool:
+    """Does answering this require resolving a reference to an earlier turn?"""
+    return bool(_ANAPHORA_RE.search(message))
+
+
+def clean_search_query(query: str, fallback: str) -> str:
+    """Strip corpus meta-terms from a generated search query."""
+    cleaned = _QUERY_NOISE_RE.sub(" ", query)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,.-")
+    words = cleaned.split()
+    # Fall back only when stripping left nothing usable. Two-word queries like
+    # "product-market fit" are perfectly good, so the bar is deliberately low —
+    # an earlier version required three words and discarded valid queries.
+    if not words or (len(words) == 1 and len(words[0]) < 3):
+        return fallback
+    return cleaned
 
 
 async def route(
@@ -119,7 +168,18 @@ async def route(
             convo, schema=_INTENT_SCHEMA, system=_ROUTER_SYSTEM, temperature=0.0
         )
         intent = Intent(parsed["intent"])
-        query = (parsed.get("search_query") or "").strip() or text
+
+        # A self-contained question is already the best possible search query.
+        # Letting the model rewrite it only adds terms: measured live, "should I
+        # stay an individual contributor or move into management" came back as
+        # "...management product growth metrics strategy", and those four
+        # appended category words pulled the embedding off the actual question.
+        # The rewrite exists to resolve references like "expand on that", so it
+        # only runs when there is a reference to resolve.
+        if needs_rewrite(text):
+            query = clean_search_query((parsed.get("search_query") or "").strip() or text, text)
+        else:
+            query = text
         confidence = float(parsed.get("confidence", 0.5))
         log.info("routed", intent=intent.value, confidence=round(confidence, 2))
         return Route(intent, query, confidence)

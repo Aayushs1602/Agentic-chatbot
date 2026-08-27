@@ -56,7 +56,7 @@ app/
 
 The rule that keeps this honest: **`agent/` imports `providers/base` but never a
 concrete provider**, and `api/` never imports `rag/` directly. So the agent loop
-is testable with a fake provider and no database — which is why 231 tests run
+is testable with a fake provider and no database — which is why 243 tests run
 with no Ollama and no keys.
 
 ---
@@ -159,8 +159,8 @@ is real content, and a false positive silently deletes knowledge.
 ## 5. Retrieval
 
 ```
-query ──┬─► dense  (pgvector cosine, top 40) ──┐
-        └─► sparse (ts_rank_cd, top 40)     ───┴─► RRF ─► cap 3/episode ─► top 5
+query ──┬─► dense  (pgvector cosine, top 80) ──┐
+        └─► sparse (ts_rank_cd, top 80)     ───┴─► RRF ─► cap 3/episode ─► top 8
 ```
 
 **Why hybrid.** Dense handles paraphrase ("how do I know I've got PMF" →
@@ -180,6 +180,14 @@ product-market fit?" while the pipeline logged success — hybrid retrieval was
 silently dense-only for every query. `build_sparse_query` now emits an OR clause
 over non-stopword terms; `ts_rank_cd` still rewards passages matching more terms
 more densely.
+
+**HNSW search width.** `hnsw.ef_search` is set per connection to
+`max(64, candidates × 2)`. pgvector's guidance is `ef_search >= LIMIT`; measured
+recall@80 at the current corpus size is 100% even at the default 40, so this is
+insurance against corpus growth rather than a present fix.
+
+**No reranker.** One was benchmarked and rejected on measurement — see
+[`retrieval-calibration.md`](retrieval-calibration.md) §5.
 
 **Diversity cap.** Max 3 passages per episode. Without it one long on-topic
 episode floods every slot and the answer cites a single guest as though it were

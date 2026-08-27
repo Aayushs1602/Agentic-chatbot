@@ -1,6 +1,6 @@
 # Manual test plan
 
-The automated suite (231 tests, `cd backend && python -m pytest`) covers logic
+The automated suite (243 tests, `cd backend && python -m pytest`) covers logic
 that can be asserted without a model. This covers what it cannot: the streaming
 UI, the artifact viewer, and behaviour that depends on a live LLM.
 
@@ -140,6 +140,6 @@ steps. Run this in a **clean directory** with `docker compose down -v` first.
 | J1 | `git clone …` into a new folder | |
 | J2 | Follow the README verbatim, no other knowledge | |
 | J3 | Time from clone to first grounded answer | **< 10 minutes** — the operational success metric |
-| J4 | `cd backend && python -m pytest` with Ollama stopped and no keys | 231 passed |
+| J4 | `cd backend && python -m pytest` with Ollama stopped and no keys | 243 passed |
 | J5 | `grep -r "sk-\|api_key" --include="*.py" --include="*.ts" .` | No secrets |
 | J6 | `git ls-files \| grep -x .env` | No output — `.env` is not tracked |

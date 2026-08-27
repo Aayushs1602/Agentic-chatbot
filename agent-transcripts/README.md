@@ -7,7 +7,7 @@ The full build session, exported from Claude Code and redacted with
   calls, results, and every correction.
 
 The brief asks for failed attempts and how they were corrected, so this page
-indexes the ones that mattered. **Six of the eight below produced no error, no
+indexes the ones that mattered. **Eight of the eleven below produced no error, no
 warning, and no failing test.** They were found by reading what the system
 actually returned rather than trusting that it worked, which is the part of the
 process worth showing.
@@ -120,6 +120,47 @@ repo-root `skills/` directory was never in the image. Load failure was logged at
 **Corrected:** build context moved to the repo root, skills copied in and
 bind-mounted for editing, and `SKILLS_DIR` makes the location explicit rather
 than inferred.
+
+## 9. Asking the wrong question of the relevance judge
+
+**Symptom:** the gate refused 5 of 6 questions whose top retrieval hit was the
+exactly-matching episode.
+
+**Cause:** the prompt asked "do these excerpts ANSWER the question". Podcast
+transcripts almost never contain a passage that neatly answers anything — they
+contain relevant discussion. The model was applying the given test correctly;
+the test was wrong.
+
+**Corrected:** reframed to "would someone asking this find this USEFUL, and
+remember these are conversational". Covered questions went 1/6 → 5/6 with
+out-of-corpus refusals still 5/5. The schema now also asks a *single* question
+(which sources are useful) and derives answerability, because the 3B routinely
+returned `answerable: false` alongside a populated source list.
+
+## 10. A reranker that made things worse
+
+**Assumed:** an off-the-shelf cross-encoder would fix the remaining retrieval
+misses. It was named in the PRD as the first thing to add.
+
+**Measured:** latency was fine — 40 pairs in 0.95–1.8 s on CPU. Quality was not.
+On `career-ic-vs-manager`, RRF had correctly surfaced the exactly-right episode;
+both `ms-marco-MiniLM-L-6-v2` and `jina-reranker-v1-turbo-en` **demoted it** and
+promoted unrelated ones, scoring every passage negative.
+
+**Corrected:** not shipped. These are MS MARCO rerankers calibrated on short
+factoid web passages, and a 400-token chunk of conversation is a different
+distribution. Benchmarking before building turned an hour of work into a
+15-minute experiment and a documented finding.
+
+## 11. A self-inflicted HNSW config gap
+
+Raising `RETRIEVAL_CANDIDATES` to 80 left `hnsw.ef_search` at its default of 40,
+below pgvector's own `ef_search >= LIMIT` guidance — a textbook silent-recall
+bug, introduced twenty minutes earlier by a fix for something else.
+
+Measured against brute-force ground truth: recall@80 was **100%** at the default,
+so it cost nothing at this corpus size. Set explicitly anyway, since the margin
+narrows as the corpus grows.
 
 ---
 

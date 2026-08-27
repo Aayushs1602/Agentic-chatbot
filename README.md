@@ -182,6 +182,7 @@ unedited. The ones that matter:
 | `ANTHROPIC_API_KEY` | *(empty)* | optional — enables the Claude Agent SDK path |
 | `EMBEDDINGS_MODEL` | `snowflake/snowflake-arctic-embed-xs` | CPU/ONNX, 384-dim |
 | `CHUNK_TOKENS` | `400` | must stay under the encoder's 512-token window |
+| `RETRIEVAL_TOP_K` | `8` | passages shown to the model; lower to `6` for faster answers |
 | `RETRIEVAL_MIN_SIM` | `0.35` | a **safety floor**, not the abstain gate — see below |
 | `DATABASE_URL` | local Postgres | swap one line for Supabase or Railway |
 
@@ -211,7 +212,7 @@ ollama pull qwen2.5:7b-instruct-q4_K_M   # better, ~6 tok/s on 4 GB VRAM
 
 ## Tests
 
-**231 tests. No Docker, no Ollama, and no API keys required** — that is the
+**243 tests. No Docker, no Ollama, and no API keys required** — that is the
 contract, so `make test-local` works on a cold machine.
 
 ```bash
@@ -274,8 +275,11 @@ Each of these was a decision, not an oversight — reasoning in
 - **No authentication.** An anonymous cookie scopes the session list. This is an
   internal single-team tool; accounts would cost a day and change nothing about
   what is being evaluated.
-- **No cross-encoder reranking.** RRF fusion is good enough at this corpus size.
-  First thing to add.
+- **No cross-encoder reranking** — tested and rejected on measurement, not
+  skipped. Off-the-shelf MS MARCO rerankers *demoted* the correct episode on the
+  golden set; they are calibrated on short factoid passages, not 400-token chunks
+  of conversation. Details in
+  [`docs/retrieval-calibration.md`](docs/retrieval-calibration.md) §5.
 - **No cloud deployment.** The brief asks for a local deployment, and Ollama
   cannot run on a free tier — so local is both the requirement and the $0 option.
 - **The Claude Agent SDK path is implemented and fixture-tested, but has not been
@@ -284,6 +288,10 @@ Each of these was a decision, not an oversight — reasoning in
 - **The 3B model under-uses bold**, so the Ship 30 rubric's emphasis check often
   fails and the essay ships with a visible warning. That is the rubric working,
   not the essay failing — a larger model passes it.
+- **The grounded-answer rate is 80%, against a 90% target.** Measured, not
+  estimated: `make evaluate` reproduces it in ~13 minutes. All three remaining
+  failures are the relevance judge refusing questions the corpus covers, and it
+  degrades as its input grows. Reported rather than tuned away.
 
 ## Documentation
 

@@ -159,3 +159,111 @@ class TestRelevanceGate:
         )
         await check_relevance(provider, "q", context)
         assert len(provider.json_calls[0]["messages"][0].content) < len(context)
+
+
+class TestSearchQueryCleaning:
+    """Corpus meta-terms in a query are pure noise.
+
+    Observed live: the router produced "approach to changing pricing model
+    company podcast transcript" and "product teams AI changes work product
+    growth strategy podcast transcripts expand on that". Every document in the
+    corpus is a podcast transcript, so those words carry no signal and drag the
+    embedding off-topic.
+    """
+
+    def test_strips_corpus_terms(self):
+        from app.agent.router import clean_search_query
+
+        out = clean_search_query("changing pricing model podcast transcript", "orig")
+        assert "podcast" not in out.lower()
+        assert "transcript" not in out.lower()
+        assert "pricing" in out
+
+    def test_strips_instruction_fragments(self):
+        from app.agent.router import clean_search_query
+
+        out = clean_search_query("how AI changes product teams expand on that", "orig")
+        assert "expand on that" not in out.lower()
+        assert "product teams" in out
+
+    def test_leaves_a_clean_query_alone(self):
+        from app.agent.router import clean_search_query
+
+        q = "how to know when you have product-market fit"
+        assert clean_search_query(q, "orig") == q
+
+    def test_falls_back_when_nothing_usable_survives(self):
+        from app.agent.router import clean_search_query
+
+        # Nothing meaningful survives, so the user's own words beat an empty query.
+        assert clean_search_query("podcast transcripts episodes", "how do I price?") == "how do I price?"
+        assert clean_search_query("", "how do I price?") == "how do I price?"
+
+    def test_short_valid_queries_are_kept(self):
+        from app.agent.router import clean_search_query
+
+        # An earlier version required three words and threw these away.
+        assert clean_search_query("product-market fit", "orig") == "product-market fit"
+        assert clean_search_query("pricing strategy podcast", "orig") == "pricing strategy"
+
+    async def test_applied_to_router_output(self):
+        from app.agent.router import route
+        from tests.fakes import FakeProvider
+
+        provider = FakeProvider(json_responses=[{
+            "intent": "knowledge_question",
+            "search_query": "pricing strategy podcast transcript expand on that",
+            "confidence": 0.9,
+        }])
+        # A follow-up, so the rewrite path runs and its output gets cleaned.
+        result = await route(provider, "Tell me more about that")
+        assert "podcast" not in result.search_query.lower()
+        assert "transcript" not in result.search_query.lower()
+        assert "pricing strategy" in result.search_query
+
+
+class TestRewriteGating:
+    """The query rewrite exists to resolve references, not to add terms.
+
+    Measured live: "should I stay an individual contributor or move into
+    management" came back as "...management product growth metrics strategy",
+    and those appended category words pulled the embedding off the question.
+    """
+
+    def test_self_contained_questions_need_no_rewrite(self):
+        from app.agent.router import needs_rewrite
+
+        assert not needs_rewrite("How do I know when I have product-market fit?")
+        assert not needs_rewrite("When should a startup hire a product manager?")
+
+    def test_references_need_a_rewrite(self):
+        from app.agent.router import needs_rewrite
+
+        assert needs_rewrite("Expand on that")
+        assert needs_rewrite("Turn that into an essay")
+        assert needs_rewrite("Tell me more about it")
+
+    async def test_self_contained_question_uses_the_users_own_words(self):
+        from app.agent.router import route
+        from tests.fakes import FakeProvider
+
+        provider = FakeProvider(json_responses=[{
+            "intent": "knowledge_question",
+            "search_query": "individual contributor management product growth metrics strategy",
+            "confidence": 0.9,
+        }])
+        question = "Should I stay an individual contributor or move into management?"
+        result = await route(provider, question)
+        assert result.search_query == question
+
+    async def test_follow_up_uses_the_rewritten_query(self):
+        from app.agent.router import route
+        from tests.fakes import FakeProvider
+
+        provider = FakeProvider(json_responses=[{
+            "intent": "knowledge_question",
+            "search_query": "retention curve signals product-market fit",
+            "confidence": 0.9,
+        }])
+        result = await route(provider, "Expand on that")
+        assert "retention curve" in result.search_query

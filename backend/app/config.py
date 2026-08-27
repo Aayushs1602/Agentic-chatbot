@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
 
     # ── Retrieval ───────────────────────────────────────────────────────
-    retrieval_top_k: int = 5
-    retrieval_candidates: int = 40
+    retrieval_top_k: int = 8
+    retrieval_candidates: int = 80
     retrieval_max_per_episode: int = 3
     retrieval_rrf_k: int = 60
     retrieval_min_sim: float = Field(default=0.35, ge=0.0, le=1.0)
