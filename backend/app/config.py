@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     # ── Corpus ──────────────────────────────────────────────────────────
     transcripts_repo: str = "https://github.com/ChatPRD/lennys-podcast-transcripts"
     transcripts_dir: str = "/data/transcripts"
+    # Where SKILL.md files live. Defaults to `<repo>/skills` when running
+    # from a source checkout; the container sets it explicitly, because
+    # walking up from __file__ resolves differently once installed.
+    skills_dir: str = ""
     chunk_tokens: int = 400
     chunk_overlap: int = 80
 

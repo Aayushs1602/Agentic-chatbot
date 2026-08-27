@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from app.agent.artifacts import ParsedArtifact, extract_artifacts
 from app.agent.citations import CitationReport, resolve_citations
 from app.agent.router import Intent, Relevance, Route, check_relevance, route
 from app.agent.skills import get_skills
@@ -78,6 +79,7 @@ class TurnResult:
     abstained: bool = False
     error: Optional[Dict[str, Any]] = None
     tool_calls: List[ToolEvent] = field(default_factory=list)
+    artifacts: List[ParsedArtifact] = field(default_factory=list)
     latency_ms: int = 0
 
 
@@ -237,7 +239,25 @@ class Orchestrator:
 
         raw = "".join(buffer)
 
-        # 5 ── Verify. Strip markers the model invented, keep what resolves.
+        # 5 ── Extract artifacts before citation work, so the citation check
+        #      runs on the chat reply rather than on hundreds of lines of HTML
+        #      whose markers belong to the document, not the message.
+        extraction = extract_artifacts(raw)
+        if extraction.artifacts:
+            result.artifacts = extraction.artifacts
+            raw = extraction.text
+            for artifact in extraction.artifacts:
+                yield ToolEvent(
+                    name="create_artifact",
+                    args={"kind": artifact.kind},
+                    result_summary={"title": artifact.title, "chars": len(artifact.content)},
+                )
+            # The fenced block streamed into the chat pane as raw markup. Replace
+            # it with just the surrounding prose; the document renders in the
+            # viewer beside it.
+            yield _ReplaceText(raw or f"I've put that in the panel: **{extraction.artifacts[0].title}**.")
+
+        # 6 ── Verify. Strip markers the model invented, keep what resolves.
         if chunks:
             report = resolve_citations(raw, chunks)
             result.text = report.text
@@ -250,7 +270,7 @@ class Orchestrator:
                     result_summary={"resolved": report.resolved,
                                     "removed_invented": report.invented},
                 )
-            if not report.is_grounded:
+            if not report.is_grounded and not result.artifacts:
                 # Generated without citing anything resolvable. The text is not
                 # trustworthy as a grounded answer, so it is replaced rather
                 # than shown with a warning — a plausible uncited answer is the

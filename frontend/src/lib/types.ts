@@ -54,6 +54,29 @@ export interface ProvidersResponse {
   providers: Provider[];
 }
 
+export interface SanitizerReport {
+  total_removed: number;
+  clean: boolean;
+  removed_tags: Record<string, number>;
+  removed_attributes: Record<string, number>;
+  removed_urls: string[];
+  notes: string[];
+  policy: Record<string, unknown>;
+}
+
+export interface Artifact {
+  id: string;
+  session_id: string;
+  message_id: string | null;
+  kind: "html" | "markdown";
+  title: string;
+  /** Always the sanitized form. Raw output is only at /artifacts/:id/raw. */
+  content: string;
+  sanitizer_report: SanitizerReport;
+  version: number;
+  created_at: string;
+}
+
 export interface ApiErrorBody {
   code: string;
   message: string;
@@ -87,6 +110,7 @@ export type StreamEvent =
   | { type: "token"; text: string }
   | { type: "replace"; text: string }
   | { type: "citations"; citations: Citation[] }
+  | ({ type: "artifact" } & Artifact)
   | {
       type: "done";
       message_id: string;

@@ -1,5 +1,6 @@
 import type {
   ApiErrorBody,
+  Artifact,
   Message,
   ProvidersResponse,
   Readiness,
@@ -58,6 +59,8 @@ export const api = {
     }),
   listMessages: (id: string) =>
     request<{ messages: Message[] }>(`/api/sessions/${id}/messages`),
+  listArtifacts: (id: string) =>
+    request<{ artifacts: Artifact[] }>(`/api/sessions/${id}/artifacts`),
 };
 
 /**
@@ -165,6 +168,7 @@ function parseFrame(frame: string): StreamEvent | null {
     case "replace":
     case "citations":
     case "done":
+    case "artifact":
     case "error":
       return { type: name, ...data } as unknown as StreamEvent;
     case "tool":

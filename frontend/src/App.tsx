@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArtifactPane } from "./components/ArtifactPane";
 import { Composer } from "./components/Composer";
 import { MessageBubble } from "./components/MessageBubble";
 import { ProviderBadge } from "./components/ProviderBadge";
@@ -7,6 +8,7 @@ import { api, streamMessage } from "./lib/api";
 import type {
   AgentStep,
   ApiErrorBody,
+  Artifact,
   Citation,
   Message,
   Readiness,
@@ -40,6 +42,9 @@ export default function App() {
   const [live, setLive] = useState<Live | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [activeArtifact, setActiveArtifact] = useState<string | null>(null);
+  const [paneOpen, setPaneOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const abortRef = useRef<(() => void) | null>(null);
@@ -86,6 +91,16 @@ export default function App() {
       .listMessages(activeId)
       .then(({ messages }) => setMessages(messages))
       .catch(() => setMessages([]));
+    api
+      .listArtifacts(activeId)
+      .then(({ artifacts }) => {
+        setArtifacts(artifacts);
+        // Reopen the pane when switching to a chat that produced documents,
+        // but never steal focus for a chat that has none.
+        setPaneOpen(artifacts.length > 0);
+        setActiveArtifact(artifacts.at(-1)?.id ?? null);
+      })
+      .catch(() => setArtifacts([]));
   }, [activeId]);
 
   // Follow the stream only while the user is already at the bottom — yanking
@@ -161,6 +176,13 @@ export default function App() {
               return { ...l, text: event.text, abstained: true };
             case "citations":
               return { ...l, citations: event.citations };
+            case "artifact": {
+              const { type: _t, ...artifact } = event;
+              setArtifacts((prev) => [...prev, artifact as Artifact]);
+              setActiveArtifact(artifact.id);
+              setPaneOpen(true);
+              return l;
+            }
             case "done":
               return { ...l, abstained: l.abstained || event.abstained };
             case "error":
@@ -198,6 +220,8 @@ export default function App() {
   const dbDown = readiness !== null && !readiness.database.reachable;
   const blocked = corpusEmpty || dbDown;
 
+  const showPane = paneOpen && artifacts.length > 0;
+
   return (
     <div className="flex h-full">
       <SessionSidebar
@@ -233,15 +257,30 @@ export default function App() {
             )}
           </div>
 
+          {artifacts.length > 0 && !showPane && (
+            <button
+              type="button"
+              onClick={() => setPaneOpen(true)}
+              className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[13px] hover:bg-surface-2"
+            >
+              {artifacts.length} document{artifacts.length === 1 ? "" : "s"}
+            </button>
+          )}
           <ProviderBadge readiness={readiness} onSwitched={refreshReadiness} />
         </header>
 
         {blocked && <Banner corpusEmpty={corpusEmpty} dbDown={dbDown} />}
 
+        <div className="flex min-h-0 flex-1">
         <main
           ref={scrollRef}
           onScroll={onScroll}
-          className="min-h-0 flex-1 overflow-y-auto px-4 py-5"
+          className={[
+            "min-h-0 flex-1 overflow-y-auto px-4 py-5",
+            // Under 1024px the pane takes over rather than squeezing the chat
+            // into an unusable column.
+            showPane ? "hidden lg:block lg:w-1/2" : "",
+          ].join(" ")}
         >
           <div className="mx-auto flex max-w-3xl flex-col gap-5">
             {loading ? (
@@ -277,6 +316,18 @@ export default function App() {
             <div ref={bottomRef} />
           </div>
         </main>
+
+        {showPane && (
+          <div className="min-h-0 w-full lg:w-1/2">
+            <ArtifactPane
+              artifacts={artifacts}
+              activeId={activeArtifact}
+              onSelect={setActiveArtifact}
+              onClose={() => setPaneOpen(false)}
+            />
+          </div>
+        )}
+        </div>
 
         <Composer
           onSend={send}

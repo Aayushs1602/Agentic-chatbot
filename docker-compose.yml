@@ -33,8 +33,12 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      # Repo root, not ./backend: the shared `skills/` directory lives outside
+      # the backend package and must be packaged with it. Skills are the one
+      # asset both the deterministic pipeline and the Claude Agent SDK path
+      # consume, so they cannot belong to either one.
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: lenny-backend
     restart: unless-stopped
     depends_on:
@@ -56,6 +60,9 @@ services:
       # so re-ingesting doesn't re-download ~200MB every time.
       - corpus:/data
       - fastembed_cache:/home/app/.cache/fastembed
+      # Read-only bind mount so a skill can be edited and picked up with a
+      # restart instead of a rebuild.
+      - ./skills:/app/skills:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz',timeout=3).status==200 else 1)\""]
       interval: 10s

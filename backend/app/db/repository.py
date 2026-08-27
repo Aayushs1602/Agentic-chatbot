@@ -254,3 +254,81 @@ async def list_tool_calls(message_id: UUID) -> List[Dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+# ── Artifacts ───────────────────────────────────────────────────────────
+
+
+async def add_artifact(
+    session_id: UUID,
+    *,
+    message_id: Optional[UUID],
+    kind: str,
+    title: str,
+    content_raw: str,
+    content_sanitized: str,
+    sanitizer_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    row = await db.fetchrow(
+        """
+        INSERT INTO artifacts (session_id, message_id, kind, title,
+                               content_raw, content_sanitized, sanitizer_report)
+        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+        RETURNING id, session_id, message_id, kind, title, content_raw,
+                  content_sanitized, sanitizer_report, version, created_at
+        """,
+        session_id, message_id, kind, title[:200],
+        content_raw, content_sanitized, sanitizer_report,
+    )
+    log.info("artifact_stored", artifact_id=str(row["id"]), kind=kind)
+    return _artifact_row(row)
+
+
+async def get_artifact(artifact_id: UUID) -> Dict[str, Any]:
+    row = await db.fetchrow(
+        """
+        SELECT id, session_id, message_id, kind, title, content_raw,
+               content_sanitized, sanitizer_report, version, created_at
+        FROM artifacts WHERE id = $1
+        """,
+        artifact_id,
+    )
+    if row is None:
+        raise NotFoundError(f"No artifact {artifact_id}.")
+    return _artifact_row(row)
+
+
+async def list_artifacts(session_id: UUID) -> List[Dict[str, Any]]:
+    rows = await db.fetch(
+        """
+        SELECT id, session_id, message_id, kind, title, content_raw,
+               content_sanitized, sanitizer_report, version, created_at
+        FROM artifacts WHERE session_id = $1 ORDER BY created_at ASC
+        """,
+        session_id,
+    )
+    return [_artifact_row(r) for r in rows]
+
+
+def _artifact_row(row) -> Dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "session_id": str(row["session_id"]),
+        "message_id": str(row["message_id"]) if row["message_id"] else None,
+        "kind": row["kind"],
+        "title": row["title"],
+        # `content_raw` is served only by the explicit /raw endpoint, so a
+        # listing can never accidentally hand unsanitized HTML to the client.
+        "content": row["content_sanitized"],
+        "sanitizer_report": row["sanitizer_report"] or {},
+        "version": row["version"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+async def get_artifact_raw(artifact_id: UUID) -> str:
+    """Original model output, for the viewer's source tab."""
+    raw = await db.fetchval("SELECT content_raw FROM artifacts WHERE id = $1", artifact_id)
+    if raw is None:
+        raise NotFoundError(f"No artifact {artifact_id}.")
+    return raw

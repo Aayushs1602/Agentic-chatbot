@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from app.agent.orchestrator import Orchestrator, TurnResult, _ReplaceText
 from app.db import repository as repo
 from app.errors import AppError
+from app.security.sanitize import sanitize_html, sanitize_markdown
 from app.logging import get_logger, get_request_id
 from app.providers.base import Completed, StreamError, TextDelta, ToolEvent
 from app.providers.registry import get_registry
@@ -187,6 +188,11 @@ async def _event_stream(
             yield _sse("citations", {"citations": result.citations})
 
         message = await _persist(session_id, result)
+
+        # Artifacts are sanitized and stored only after the message row exists,
+        # so each one is attributable to the turn that produced it.
+        for stored in await _persist_artifacts(session_id, UUID(message["id"]), result):
+            yield _sse("artifact", stored)
         yield _sse("done", {
             "message_id": message["id"],
             "intent": result.intent,
@@ -235,6 +241,41 @@ async def _persist(
     )
     await repo.record_tool_calls(session_id, UUID(message["id"]), result.tool_calls)
     return message
+
+
+async def _persist_artifacts(
+    session_id: UUID, message_id: UUID, result: TurnResult
+) -> List[Dict[str, Any]]:
+    """Sanitize and store every artifact from the turn.
+
+    Sanitization happens here, on the way in — the database never holds
+    renderable HTML that has not been through the allowlist, so no future read
+    path can serve unsanitized content by forgetting a step.
+    """
+    stored: List[Dict[str, Any]] = []
+    for artifact in result.artifacts:
+        cleaned = (
+            sanitize_html(artifact.content)
+            if artifact.kind == "html"
+            else sanitize_markdown(artifact.content)
+        )
+        try:
+            row = await repo.add_artifact(
+                session_id,
+                message_id=message_id,
+                kind=artifact.kind,
+                title=artifact.title,
+                content_raw=artifact.content,
+                content_sanitized=cleaned.html,
+                sanitizer_report=cleaned.report.to_dict(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The answer already reached the user; losing the artifact row is
+            # bad but not worth failing the turn over.
+            log.warning("artifact_not_stored", error=str(exc))
+            continue
+        stored.append(row)
+    return stored
 
 
 def _user_id(request: Request, response: Response) -> str:

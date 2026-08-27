@@ -22,12 +22,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.config import settings
 from app.logging import get_logger
 
 log = get_logger("agent.skills")
 
-# backend/app/agent/skills.py -> repo root -> skills/
-_DEFAULT_DIR = Path(__file__).resolve().parents[3] / "skills"
+
+def _default_dir() -> Path:
+    """Locate the skills directory.
+
+    SKILLS_DIR wins when set. Otherwise try the source-checkout layout
+    (`backend/app/agent/ -> repo root -> skills/`) and then the container
+    layout (`/app/skills`). Deriving this purely from __file__ was a real bug:
+    it resolved to `/skills` inside the image, so every skill silently failed to
+    load and the agent quietly fell back to a generic prompt.
+    """
+    if settings.skills_dir:
+        return Path(settings.skills_dir)
+    here = Path(__file__).resolve()
+    for candidate in (here.parents[3] / "skills", here.parents[2] / "skills"):
+        if candidate.is_dir():
+            return candidate
+    return here.parents[2] / "skills"
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.S)
 
@@ -83,7 +99,7 @@ def _parse(path: Path) -> Optional[Skill]:
 
 class SkillRegistry:
     def __init__(self, directory: Optional[Path] = None) -> None:
-        self.directory = Path(directory or _DEFAULT_DIR)
+        self.directory = Path(directory) if directory else _default_dir()
         self._skills: Dict[str, Skill] = {}
         self._loaded = False
 

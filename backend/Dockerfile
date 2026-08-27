@@ -21,10 +21,12 @@ RUN useradd --create-home --uid 1000 app \
 WORKDIR /app
 
 # Requirements first so the dependency layer caches across code edits.
-COPY requirements.txt requirements-dev.txt ./
+COPY backend/requirements.txt backend/requirements-dev.txt ./
 RUN pip install --upgrade pip && pip install -r requirements-dev.txt
 
-COPY --chown=app:app . .
+COPY --chown=app:app backend/ .
+# Shared skill definitions, consumed by every provider path.
+COPY --chown=app:app skills/ ./skills/
 
 USER app
 EXPOSE 8000
