@@ -6,6 +6,7 @@
 
 # Corpus (cloned at ingest time, ~200MB)
 data/
+docs/
 backend/data/
 
 # Python
