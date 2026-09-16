@@ -41,6 +41,8 @@ class FakeProvider:
         fail_stream: Optional[StreamError] = None,
         fail_json: Optional[Exception] = None,
         chunk_size: int = 8,
+        status_delay: float = 0.0,
+        fail_status: Optional[Exception] = None,
     ) -> None:
         self.text = text
         self.json_responses = list(json_responses or [])
@@ -48,6 +50,11 @@ class FakeProvider:
         self.fail_stream = fail_stream
         self.fail_json = fail_json
         self.chunk_size = chunk_size
+        # A real `status()` is a live HTTP call. `status_delay` makes that cost
+        # visible, so the health cache and the concurrent fallback probe can be
+        # asserted on rather than assumed.
+        self.status_delay = status_delay
+        self.fail_status = fail_status
 
         # Recorded so tests can assert on what the orchestrator actually sent —
         # e.g. that retrieved context reached the system prompt, or that the
@@ -55,8 +62,18 @@ class FakeProvider:
         self.stream_calls: List[Dict[str, Any]] = []
         self.json_calls: List[Dict[str, Any]] = []
         self.warmups = 0
+        self.status_calls = 0
 
     async def status(self) -> ProviderStatus:
+        # Counted before the delay, so concurrent entrants are all recorded —
+        # which is exactly what the single-flight assertion needs to see.
+        self.status_calls += 1
+        if self.status_delay:
+            import asyncio
+
+            await asyncio.sleep(self.status_delay)
+        if self.fail_status is not None:
+            raise self.fail_status
         return ProviderStatus(
             id=self.id,
             label=self.label,

@@ -9,14 +9,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, artifacts, chat, health, providers, search
+from app.api import admin, artifacts, chat, health, keys, providers, search
 from app.config import settings
 from app.db import pool as db
 from app.agent.skills import get_skills
 from app.db.migrate import run_migrations
+from app.db.tenants import bootstrap_dev_key
 from app.providers.registry import get_registry
 from app.errors import register_exception_handlers
-from app.logging import configure_logging, get_logger, new_request_id, set_request_id
+from app.logging import (
+    configure_logging,
+    get_logger,
+    new_request_id,
+    set_request_id,
+    set_tenant_id,
+)
 
 configure_logging()
 log = get_logger("main")
@@ -37,11 +44,23 @@ async def lifespan(_: FastAPI):
     # A DB that is down must NOT prevent startup — otherwise /readyz can't report it.
     try:
         await run_migrations()
+        # Seeds DEV_API_KEY against the `dev` tenant when set; no-op otherwise.
+        # After migrations, because it needs the tenant row 002 creates.
+        await bootstrap_dev_key()
     except Exception as exc:  # noqa: BLE001
         log.error(
             "startup_migrations_failed",
             error=str(exc),
             hint="The API will start in a degraded state; see /readyz.",
+        )
+
+    if not settings.auth_required:
+        # Loud on purpose. An unauthenticated API is a legitimate local
+        # configuration and an incident anywhere else, and the difference
+        # should be visible in the first ten lines of the log.
+        log.warning(
+            "auth_disabled",
+            hint="AUTH_REQUIRED=false — every request runs as the default tenant.",
         )
     # Load skills eagerly so a malformed SKILL.md is a startup log line rather
     # than a surprise on the first request that needs it.
@@ -96,6 +115,12 @@ def create_app() -> FastAPI:
         """
         rid = request.headers.get("X-Request-ID") or new_request_id()
         set_request_id(rid)
+        # Cleared at the start of every request, not just set at auth time.
+        # Task-local ContextVars should already isolate requests, but "should"
+        # is the wrong level of confidence for the value that is about to drive
+        # `SET LOCAL app.tenant_id`: a stale tenant leaking into an
+        # unauthenticated request would be an isolation failure, not a log typo.
+        set_tenant_id("-")
         started = time.perf_counter()
         response = await call_next(request)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
@@ -119,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api")
     app.include_router(artifacts.router, prefix="/api")
     app.include_router(admin.router, prefix="/api")
+    app.include_router(keys.router, prefix="/api")
 
     return app
 

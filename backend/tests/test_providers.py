@@ -7,6 +7,9 @@ against fakes, so the suite still needs no Ollama and no API keys.
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from app.providers.anthropic_sdk import AnthropicAgentProvider, _flatten, _parse_json
@@ -146,6 +149,175 @@ class TestRegistry:
         with pytest.raises(ProviderUnavailableError) as exc:
             await registry.resolve("a")
         assert exc.value.detail.get("tried")
+
+
+def _registry_of(**fakes: FakeProvider) -> ProviderRegistry:
+    """A registry containing only the given fakes, each carrying its own id."""
+    registry = ProviderRegistry()
+    registry._providers = dict(fakes)
+    for key, provider in fakes.items():
+        provider.id = key
+    return registry
+
+
+class TestHealthCache:
+    """Availability is cached, because `status()` is a live HTTP call on the
+    Ollama path and `resolve()` runs on every single chat turn."""
+
+    async def test_second_check_within_ttl_does_not_reprobe(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        fake = FakeProvider(available=True)
+        registry = _registry_of(a=fake)
+
+        await registry.health("a", fake)
+        await registry.health("a", fake)
+        await registry.health("a", fake)
+        assert fake.status_calls == 1
+
+    async def test_cache_expires(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 0.05)
+        fake = FakeProvider(available=True)
+        registry = _registry_of(a=fake)
+
+        await registry.health("a", fake)
+        await asyncio.sleep(0.06)
+        await registry.health("a", fake)
+        assert fake.status_calls == 2
+
+    async def test_force_bypasses_the_cache(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        fake = FakeProvider(available=True)
+        registry = _registry_of(a=fake)
+
+        await registry.health("a", fake)
+        await registry.health("a", fake, force=True)
+        assert fake.status_calls == 2
+
+    async def test_ttl_zero_disables_caching(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 0.0)
+        fake = FakeProvider(available=True)
+        registry = _registry_of(a=fake)
+
+        await registry.health("a", fake)
+        await registry.health("a", fake)
+        assert fake.status_calls == 2
+
+    async def test_invalidate_forces_a_reprobe(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        fake = FakeProvider(available=True)
+        registry = _registry_of(a=fake)
+
+        await registry.health("a", fake)
+        registry.invalidate("a")
+        await registry.health("a", fake)
+        assert fake.status_calls == 2
+
+    async def test_concurrent_cold_callers_produce_one_probe(self, monkeypatch):
+        # Single-flight. Without it, a cold cache under load means every
+        # in-flight request starts its own probe — which is the stampede the
+        # cache was added to prevent, just moved to the moment it expires.
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        fake = FakeProvider(available=True, status_delay=0.05)
+        registry = _registry_of(a=fake)
+
+        results = await asyncio.gather(*(registry.health("a", fake) for _ in range(10)))
+        assert fake.status_calls == 1
+        assert all(r.available for r in results)
+
+    async def test_a_probe_that_raises_is_reported_not_propagated(self, monkeypatch):
+        # /readyz and the provider badge both sit on this path; an adapter that
+        # throws must degrade one provider, not the endpoint explaining why.
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        fake = FakeProvider(fail_status=RuntimeError("socket exploded"))
+        registry = _registry_of(a=fake)
+
+        status = await registry.health("a", fake)
+        assert not status.available
+        assert "socket exploded" in status.reason
+
+    async def test_resolve_reuses_the_cached_probe(self, monkeypatch):
+        # The actual point of the cache: a chat turn no longer pays a provider
+        # round-trip before generation starts.
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        fake = FakeProvider(available=True)
+        registry = _registry_of(a=fake)
+
+        for _ in range(5):
+            provider, fell_back = await registry.resolve("a")
+            assert provider.id == "a" and fell_back is None
+        assert fake.status_calls == 1
+
+
+class TestFallbackProbing:
+    async def test_candidates_are_probed_concurrently(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_fallback", True)
+        monkeypatch.setattr(settings, "provider_fallback_order", "a,b,c,d")
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        registry = _registry_of(
+            a=FakeProvider(available=False),
+            b=FakeProvider(available=False, status_delay=0.1),
+            c=FakeProvider(available=False, status_delay=0.1),
+            d=FakeProvider(available=True, status_delay=0.1),
+        )
+
+        started = time.monotonic()
+        provider, fell_back = await registry.resolve("a")
+        elapsed = time.monotonic() - started
+
+        assert provider.id == "d"
+        assert fell_back == "a"
+        # Serially this is three 0.1s probes before the first token; the user
+        # whose provider is down waited out the entire chain.
+        assert elapsed < 0.25, f"candidates probed serially ({elapsed:.2f}s)"
+
+    async def test_concurrency_does_not_change_which_provider_wins(self, monkeypatch):
+        # Probing in parallel must only change how long it takes to find out,
+        # never the outcome: priority is still the configured order, so a
+        # slower-but-higher-priority provider still beats a fast one.
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_fallback", True)
+        monkeypatch.setattr(settings, "provider_fallback_order", "a,b,c")
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        registry = _registry_of(
+            a=FakeProvider(available=False),
+            b=FakeProvider(available=True, status_delay=0.08),
+            c=FakeProvider(available=True),
+        )
+
+        provider, fell_back = await registry.resolve("a")
+        assert provider.id == "b"
+        assert fell_back == "a"
+
+    async def test_the_requested_provider_is_never_probed_twice(self, monkeypatch):
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "provider_fallback", True)
+        monkeypatch.setattr(settings, "provider_fallback_order", "a,b")
+        monkeypatch.setattr(settings, "provider_health_ttl_s", 60.0)
+        down = FakeProvider(available=False)
+        registry = _registry_of(a=down, b=FakeProvider(available=True))
+
+        await registry.resolve("a")
+        assert down.status_calls == 1
 
 
 class TestStreamContract:

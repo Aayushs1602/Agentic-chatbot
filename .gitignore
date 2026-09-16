@@ -6,8 +6,11 @@
 
 # Corpus (cloned at ingest time, ~200MB)
 data/
-docs/
 backend/data/
+# NOTE: `docs/` was ignored here alongside the corpus dirs, which silently
+# dropped every *new* file under docs/ — the six tracked .md files survived
+# only because they predate the rule. Removed so docs/exercises/ and
+# docs/chaos.md (ROADMAP.md P0.1 and P14) can actually be committed.
 
 # Python
 __pycache__/

@@ -10,8 +10,9 @@ So the endpoints do not just page through rows — they flag the specific proble
 that have bitten before, and the dashboard sorts by them. A corpus you cannot
 look at is a corpus you cannot trust.
 
-Read-only by design: no auth exists in this product (see the PRD), so nothing
-here may mutate anything.
+Read-only by design. That was originally because the product had no auth at
+all; it stays true now that P1 added API keys, because a corpus inspector has
+no business mutating anything. Key management lives in api/keys.py.
 """
 
 from __future__ import annotations

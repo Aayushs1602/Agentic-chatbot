@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # ── Tenancy & auth ──────────────────────────────────────────────────
+    # Defaults to ON. A permissive default is how auth bypasses ship: it works
+    # everywhere, so nobody notices it is off until it is off in production.
+    # Local development turns it off explicitly in .env, which is a decision
+    # someone made rather than one nobody made.
+    auth_required: bool = True
+    # Seeds an API key for the `dev` tenant at startup when set. Read from the
+    # environment, never committed — a key hash in a migration is a fixed
+    # credential in git, and "it's only for dev" is what gets it into staging.
+    dev_api_key: str = ""
+
     # ── Database ────────────────────────────────────────────────────────
     database_url: str = "postgresql://lenny:lenny@db:5432/lenny"
     db_pool_min: int = 1
@@ -41,6 +52,12 @@ class Settings(BaseSettings):
     llm_provider: ProviderName = "ollama"
     provider_fallback: bool = True
     provider_fallback_order: str = "ollama,cloud,anthropic"
+    # How long a provider's availability is trusted before it is re-probed.
+    # `status()` is a live HTTP call for Ollama, so without this every chat
+    # turn paid a round-trip before generation even started. Short enough that
+    # starting a provider is noticed within a few seconds; the UI's provider
+    # list bypasses it entirely so a manual refresh always tells the truth.
+    provider_health_ttl_s: float = Field(default=10.0, ge=0.0)
 
     # ── Ollama ──────────────────────────────────────────────────────────
     ollama_base_url: str = "http://host.docker.internal:11434"

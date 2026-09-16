@@ -14,6 +14,16 @@ import type {
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
+// Baked in at build time by Vite, so a key change needs a frontend rebuild.
+// Blank is the normal local case (AUTH_REQUIRED=false on the backend); the
+// header is then omitted entirely rather than sent empty, which would look
+// like a malformed credential instead of no credential.
+const API_KEY = import.meta.env.VITE_API_KEY ?? "";
+
+function authHeaders(): Record<string, string> {
+  return API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {};
+}
+
 export class ApiError extends Error {
   constructor(readonly body: ApiErrorBody, readonly status: number) {
     super(body.message);
@@ -25,7 +35,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     // Sends the anonymous user cookie, which scopes the session list.
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init?.headers ?? {}) },
   });
 
   if (!response.ok) {
@@ -108,7 +118,7 @@ export function streamMessage(
       const response = await fetch(`${BASE}/api/sessions/${sessionId}/messages`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ content, provider }),
         signal: controller.signal,
       });

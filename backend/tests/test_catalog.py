@@ -84,11 +84,15 @@ class TestClassification:
         assert classify("what colour is the podcast logo") == "unsupported"
 
 
+# `app_db`, not `db_pool`: these call catalog functions that go through the
+# application's module-global pool, which asyncpg binds to the event loop that
+# created it. With a loop per test, the second db test onward inherited a pool
+# from a closed loop. Invisible until Postgres was actually running.
 @pytest.mark.db
 class TestAnswers:
     """Answers come from SQL, so they are exact by construction."""
 
-    async def test_count_reports_real_totals(self, db_pool):
+    async def test_count_reports_real_totals(self, app_db):
         from app.agent.catalog import answer
         from tests.fakes import FakeProvider
 
@@ -96,7 +100,7 @@ class TestAnswers:
         assert result.handled
         assert "episodes" in result.text
 
-    async def test_episode_number_explains_the_gap(self, db_pool):
+    async def test_episode_number_explains_the_gap(self, app_db):
         from app.agent.catalog import answer
         from tests.fakes import FakeProvider
 
@@ -109,7 +113,7 @@ class TestAnswers:
 
 @pytest.mark.db
 class TestDataQuality:
-    async def test_zero_duration_rows_are_excluded(self, db_pool):
+    async def test_zero_duration_rows_are_excluded(self, app_db):
         from app.agent.catalog import answer
         from tests.fakes import FakeProvider
 
@@ -119,7 +123,7 @@ class TestDataQuality:
         assert result.handled
         assert "unknown length" not in result.text
 
-    async def test_short_clips_are_labelled(self, db_pool):
+    async def test_short_clips_are_labelled(self, app_db):
         from app.agent.catalog import answer
         from tests.fakes import FakeProvider
 

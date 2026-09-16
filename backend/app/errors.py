@@ -62,6 +62,18 @@ class NotFoundError(AppError):
     message = "Resource not found."
 
 
+class UnauthorizedError(AppError):
+    code = "unauthorized"
+    status_code = status.HTTP_401_UNAUTHORIZED
+    message = "A valid API key is required."
+
+
+class RateLimitedError(AppError):
+    code = "rate_limited"
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    message = "Rate limit exceeded."
+
+
 class ValidationError(AppError):
     code = "validation_error"
     status_code = status.HTTP_422_UNPROCESSABLE_ENTITY

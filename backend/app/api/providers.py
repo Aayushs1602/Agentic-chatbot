@@ -27,7 +27,10 @@ class SetProvider(BaseModel):
 @router.get("/providers", summary="List providers and their availability")
 async def list_providers() -> Dict[str, Any]:
     registry = get_registry()
-    statuses = await registry.statuses()
+    # Forced past the health cache: anyone looking at this screen has usually
+    # just started or stopped something, and a stale answer here is worse than
+    # a slow one. The chat path is what the cache exists for.
+    statuses = await registry.statuses(force=True)
     return {
         "active": registry.active_id,
         "fallback_enabled": settings.provider_fallback,

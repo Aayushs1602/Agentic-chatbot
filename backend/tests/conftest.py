@@ -66,3 +66,34 @@ async def db_pool():
         yield pool
     finally:
         await pool.close()
+
+
+@pytest.fixture
+async def app_db(db_pool):
+    """The *application's* pool (`app.db.pool`), bound to this test's loop.
+
+    `db_pool` above hands back a pool the test owns. This fixture is for tests
+    that exercise real repository functions, which go through the module-global
+    pool instead.
+
+    That global is the problem this fixture exists to solve. asyncpg binds a
+    pool to the event loop that created it, and pytest-asyncio gives each test
+    a fresh loop — so the first db test creates the pool, its loop closes, and
+    every later test inherits connections belonging to a dead loop and fails
+    with `RuntimeError: Event loop is closed`. Nothing is wrong in production,
+    where one loop lives for the life of the process; it is purely an artefact
+    of per-test loops meeting a process-global.
+
+    Abandoning the stale pool rather than closing it is deliberate: closing it
+    would run on the dead loop and raise the very error being avoided.
+    """
+    from app.db import pool as app_pool
+
+    app_pool._pool = None
+    try:
+        yield app_pool
+    finally:
+        try:
+            await app_pool.close_pool()
+        except Exception:  # noqa: BLE001 — loop already gone; let it be collected
+            app_pool._pool = None

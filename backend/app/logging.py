@@ -22,6 +22,13 @@ from app.config import settings
 # rather than a parameter so deep call sites don't have to thread it through.
 _request_id: ContextVar[str] = ContextVar("request_id", default="-")
 
+# Set by the auth dependency once a key resolves to a tenant. It lives here
+# next to request_id for two reasons: every log line should carry it, and the
+# `SET LOCAL app.tenant_id` wrapper that RLS needs has to read the current
+# tenant from somewhere that deep call sites can reach without threading it
+# through every signature.
+_tenant_id: ContextVar[str] = ContextVar("tenant_id", default="-")
+
 
 def new_request_id() -> str:
     return uuid.uuid4().hex[:16]
@@ -35,10 +42,22 @@ def get_request_id() -> str:
     return _request_id.get()
 
 
+def set_tenant_id(value: str) -> None:
+    _tenant_id.set(value)
+
+
+def get_tenant_id() -> str:
+    """Current tenant, or "-" on an unauthenticated path (health, docs)."""
+    return _tenant_id.get()
+
+
 def _inject_request_id(
     _logger: Any, _name: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
     event_dict.setdefault("request_id", _request_id.get())
+    tenant = _tenant_id.get()
+    if tenant != "-":
+        event_dict.setdefault("tenant_id", tenant)
     return event_dict
 
 
