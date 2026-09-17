@@ -80,7 +80,7 @@ P14 adds no new system — it validates every one of them.
 | Phase | Name | Systems | Exercises | Size | Status |
 |---|---|---|---|---|---|
 | **P0** | Baseline & known-issue cleanup | #4, #10, #14 (existing) | — | ~0.5d | **done** |
-| **P1** | Tenancy, auth, rate limit, usage | #1a, #2, #8 | 2 | ~3d | schema+auth **verified** |
+| **P1** | Tenancy, auth, rate limit, usage | #1a, #2, #8 | 2 | ~3d | RLS live; ledger + Ex.2 left |
 | **P2** | Routing & resilience | #15 | 1 | ~2d | [ ] |
 | **P3** | Prompt & config registry | #9 | 1 | ~2d | [ ] |
 | **P4** | Context assembly & token budget | #13 | 1 | ~2d | [ ] |
@@ -209,6 +209,25 @@ without a join.
 - [x] Key CRUD in `api/keys.py` plus `GET /whoami`. Not `admin.py`, which
       documents itself as read-only corpus inspection.
 
+**Write paths & enforcement** — done after RLS landed
+
+- [x] `repository.py` sets `tenant_id` on all four INSERTs (sessions, messages,
+      tool_calls, artifacts). `002` had made the column NOT NULL and dropped its
+      default, so every write had been raising `NotNullViolationError` — the app
+      could not start a conversation while 400 tests passed.
+- [x] `app/tenancy.py:current_tenant()` — raises `TenantRequiredError` (500)
+      rather than guessing. A silent default here writes one tenant's data into
+      another's account and nothing downstream ever flags it.
+- [x] `ingest.py` binds `INGEST_TENANT_SLUG` for the run, since a CLI has no
+      request to inherit from, and fails loudly on an unknown slug.
+- [x] `require_tenant` enforced at the **router** level in `main.py` for chat,
+      search, artifacts and admin — so a new endpoint in those files is
+      protected by default. Health and providers stay open: no tenant data, and
+      /readyz must answer while the database is down.
+- [x] `tests/test_repository_writes.py` (5 tests) — the gap that let the NOT NULL
+      break through. Verified non-vacuous: reverting `create_session` to its
+      broken form fails all 5.
+
 **Usage ledger**
 
 - [ ] Provider price map (per-model, input/output, in micros)
@@ -239,6 +258,48 @@ without a join.
 >    or you will spend an evening debugging Postgres instead of your policies.
 
 #### 🧪 Exercise 1 — Postgres Row-Level Security  **[you]**
+
+> ### ✅ Done — four traps, all hit on real hardware
+>
+> 1. **Owners bypass RLS.** Policy correct, `ENABLE` on, and ACME's row came
+>    back anyway: `lenny` owns the tables. Fixed by `FORCE`.
+> 2. **Superusers bypass it even with FORCE.** The Docker image makes
+>    `POSTGRES_USER` a superuser (`rolbypassrls = t`), so no table-level setting
+>    could ever have worked. Fixed by a dedicated `lenny_app` role — DML only,
+>    no `CREATE` on the schema, so it cannot redefine the accessor the policies
+>    call.
+> 3. **`SET` leaks across pooled connections.** Measured: a second request that
+>    set *nothing* still counted ACME's row. Fixed by `SET LOCAL` inside an
+>    explicit transaction (`_tenant_scope()` in `db/pool.py`).
+> 4. **`SET LOCAL` resets to `''`, not NULL** — and `''::uuid` *raises*. The
+>    policy returned a 500 from the security layer instead of zero rows. Fixed
+>    by `app_current_tenant()`, which catches `invalid_text_representation` and
+>    returns NULL. A security boundary answers "none"; it never throws.
+>
+> Traps 1 and 2 were predicted below. **Traps 3 and 4 were not** — they were
+> found by running the thing, which is the entire argument for step 7.
+>
+> Scope: seven tables (the six plus `usage_events`), `ENABLE` + `FORCE` + one
+> policy each. `tenants` and `api_keys` are deliberately excluded — auth must
+> read a key row *before* it knows which tenant is asking, so a policy there
+> makes every key look invalid.
+>
+> `tests/test_rls.py` (14 tests) runs as `lenny_app` via `SET LOCAL ROLE`.
+> Without that it would pass against a database with no policies at all.
+> Verified non-vacuous: dropping `FORCE` fails 1 test; making the accessor raise
+> instead of failing closed fails 3. Suite: **400 passed** with the DB up.
+>
+> **Last mile closed.** Migrations run on owner credentials via a dedicated
+> connection in `migrate.py`; the pool authenticates as `lenny_app` through
+> `APP_DATABASE_URL`. Verified end to end: `current_user = lenny_app`,
+> `rolsuper = false`, default tenant sees 32 sessions, acme sees 1, a
+> cross-tenant fetch by explicit id returns 404 rather than a filtered row, and
+> `CREATE TABLE` from the app is refused.
+>
+> `APP_DATABASE_URL` blank still falls back to the owner URL so an existing
+> checkout boots — but startup then logs `rls_not_enforced`, because that
+> configuration has every policy in place and none of them applying.
+>
 
 **LEARN.** *(1) Concept* — the database decides which rows a session can see,
 using a policy evaluated per row against a connection-local variable. *(2) Why*

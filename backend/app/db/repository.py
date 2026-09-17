@@ -14,6 +14,7 @@ from app.db import pool as db
 from app.errors import NotFoundError
 from app.logging import get_logger
 from app.providers.base import Message
+from app.tenancy import current_tenant
 
 log = get_logger("repository")
 
@@ -31,11 +32,11 @@ async def create_session(
 ) -> Dict[str, Any]:
     row = await db.fetchrow(
         """
-        INSERT INTO sessions (title, user_id, provider, model, metadata)
-        VALUES ($1, $2, $3, $4, $5::jsonb)
+        INSERT INTO sessions (title, user_id, provider, model, metadata, tenant_id)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
         RETURNING id, title, user_id, provider, model, created_at, updated_at, metadata
         """,
-        title, user_id, provider, model, metadata or {},
+        title, user_id, provider, model, metadata or {}, current_tenant(),
     )
     log.info("session_created", session_id=str(row["id"]))
     return _session_row(row)
@@ -146,13 +147,14 @@ async def add_message(
         """
         INSERT INTO messages (session_id, role, content, provider, model, intent,
                               latency_ms, tokens_in, tokens_out, citations,
-                              finish_reason, error)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb)
+                              finish_reason, error, tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13)
         RETURNING id, session_id, role, content, created_at, provider, model, intent,
                   latency_ms, tokens_in, tokens_out, citations, finish_reason, error
         """,
         session_id, role, content, provider, model, intent,
         latency_ms, tokens_in, tokens_out, citations or [], finish_reason, error,
+        current_tenant(),
     )
     await touch_session(session_id)
     return _message_row(row)
@@ -218,18 +220,23 @@ async def record_tool_calls(session_id: UUID, message_id: UUID, calls: List[Any]
     """
     if not calls:
         return
+    # Resolved once, outside the loop and before the try: a missing tenant is a
+    # wiring bug that should surface, not be swallowed by the best-effort
+    # handler below alongside genuine write failures.
+    tenant = current_tenant()
     try:
         pool = await db.get_pool()
         async with pool.acquire() as conn:
             await conn.executemany(
                 """
                 INSERT INTO tool_calls (message_id, session_id, name, args,
-                                        result_summary, duration_ms, ok, error)
-                VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8)
+                                        result_summary, duration_ms, ok, error,
+                                        tenant_id)
+                VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,$8,$9)
                 """,
                 [
                     (message_id, session_id, c.name, c.args, c.result_summary,
-                     c.duration_ms, c.ok, c.error)
+                     c.duration_ms, c.ok, c.error, tenant)
                     for c in calls
                 ],
             )
@@ -272,13 +279,14 @@ async def add_artifact(
     row = await db.fetchrow(
         """
         INSERT INTO artifacts (session_id, message_id, kind, title,
-                               content_raw, content_sanitized, sanitizer_report)
-        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+                               content_raw, content_sanitized, sanitizer_report,
+                               tenant_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
         RETURNING id, session_id, message_id, kind, title, content_raw,
                   content_sanitized, sanitizer_report, version, created_at
         """,
         session_id, message_id, kind, title[:200],
-        content_raw, content_sanitized, sanitizer_report,
+        content_raw, content_sanitized, sanitizer_report, current_tenant(),
     )
     log.info("artifact_stored", artifact_id=str(row["id"]), kind=kind)
     return _artifact_row(row)

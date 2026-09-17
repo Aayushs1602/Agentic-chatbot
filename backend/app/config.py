@@ -42,9 +42,28 @@ class Settings(BaseSettings):
     # environment, never committed — a key hash in a migration is a fixed
     # credential in git, and "it's only for dev" is what gets it into staging.
     dev_api_key: str = ""
+    # Which tenant `python -m app.rag.ingest` loads transcripts into. A CLI run
+    # has no request to inherit a tenant from, so it names one; the run fails
+    # loudly if the slug does not exist rather than picking something.
+    ingest_tenant_slug: str = "default"
 
     # ── Database ────────────────────────────────────────────────────────
+    # Owner credentials. Used ONLY to run migrations and to provision the
+    # application role at startup — never to serve a request.
     database_url: str = "postgresql://lenny:lenny@db:5432/lenny"
+    # Application credentials: a non-superuser, non-owner role, so Row-Level
+    # Security actually applies to it. Superusers and table owners both bypass
+    # RLS unconditionally, so running the app on `database_url` silently
+    # disables every policy in 003_rls.sql.
+    #
+    # Blank falls back to the owner URL and logs a loud warning at startup.
+    # It is a fallback rather than a hard failure because an existing checkout
+    # must still boot, but it means isolation is not being enforced.
+    app_database_url: str = ""
+    # Password set on the application role at startup, when provided. Kept in
+    # the environment for the same reason as DEV_API_KEY: a credential in a
+    # migration is a credential in git.
+    app_db_password: str = ""
     db_pool_min: int = 1
     db_pool_max: int = 10
 
@@ -123,6 +142,20 @@ class Settings(BaseSettings):
     @property
     def fallback_order(self) -> List[str]:
         return [p.strip() for p in self.provider_fallback_order.split(",") if p.strip()]
+
+    @property
+    def app_asyncpg_dsn(self) -> str:
+        """DSN the request-serving pool uses. Falls back to the owner URL."""
+        dsn = self.app_database_url or self.database_url
+        if "+" in dsn.split("://", 1)[0]:
+            scheme, rest = dsn.split("://", 1)
+            dsn = scheme.split("+", 1)[0] + "://" + rest
+        return dsn
+
+    @property
+    def running_as_owner(self) -> bool:
+        """True when the app has no separate role, so RLS is not enforced."""
+        return not self.app_database_url
 
     @property
     def asyncpg_dsn(self) -> str:

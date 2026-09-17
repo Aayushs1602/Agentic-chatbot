@@ -37,6 +37,7 @@ import frontmatter
 from app.config import settings
 from app.db import pool as db
 from app.db.migrate import run_migrations
+from app.tenancy import current_tenant, set_tenant_id
 from app.logging import configure_logging, get_logger
 from app.rag.chunker import chunk_transcript, looks_like_ad
 from app.rag.embeddings import get_embedder
@@ -171,8 +172,9 @@ def parse_episode(path: Path, repo_root: Path) -> Tuple[Dict[str, Any], str]:
 
 _UPSERT_EPISODE = """
 INSERT INTO episodes (slug, title, guests, youtube_url, video_id, published_on,
-                      duration_s, description, source_path, content_sha256, ingested_at)
-VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, now())
+                      duration_s, description, source_path, content_sha256, ingested_at,
+                      tenant_id)
+VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10, now(), $11)
 ON CONFLICT (slug) DO UPDATE SET
     title = EXCLUDED.title,
     guests = EXCLUDED.guests,
@@ -194,6 +196,7 @@ async def _existing_hashes() -> Dict[str, str]:
 
 
 async def _store_episode(episode: Dict[str, Any], chunks: List[Dict[str, Any]]) -> int:
+    tenant = current_tenant()
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -209,6 +212,7 @@ async def _store_episode(episode: Dict[str, Any], chunks: List[Dict[str, Any]]) 
                 episode["description"],
                 episode["source_path"],
                 episode["content_sha256"],
+                tenant,
             )
             # Replace rather than upsert: a re-chunk can produce a different
             # number of chunks, and orphaned tail chunks would poison retrieval.
@@ -216,8 +220,9 @@ async def _store_episode(episode: Dict[str, Any], chunks: List[Dict[str, Any]]) 
             await conn.executemany(
                 """
                 INSERT INTO chunks (episode_id, ord, text, token_count,
-                                    start_char, end_char, start_seconds, embedding)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector)
+                                    start_char, end_char, start_seconds, embedding,
+                                    tenant_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
                 """,
                 [
                     (
@@ -229,6 +234,7 @@ async def _store_episode(episode: Dict[str, Any], chunks: List[Dict[str, Any]]) 
                         c["end_char"],
                         c["start_seconds"],
                         c["embedding"],
+                        tenant,
                     )
                     for c in chunks
                 ],
@@ -239,6 +245,19 @@ async def _store_episode(episode: Dict[str, Any], chunks: List[Dict[str, Any]]) 
 # ── Orchestration ───────────────────────────────────────────────────────
 
 
+async def _bind_ingest_tenant() -> None:
+    """Resolve INGEST_TENANT_SLUG to a tenant id and bind it for this run."""
+    slug = settings.ingest_tenant_slug
+    tenant_id = await db.fetchval("SELECT id FROM tenants WHERE slug = $1", slug)
+    if tenant_id is None:
+        raise SystemExit(
+            f"No tenant with slug {slug!r}. Set INGEST_TENANT_SLUG to an "
+            f"existing tenant, or create it first."
+        )
+    set_tenant_id(str(tenant_id))
+    log.info("ingest_tenant_bound", slug=slug, tenant_id=str(tenant_id))
+
+
 async def ingest(
     *,
     limit: Optional[int] = None,
@@ -247,6 +266,13 @@ async def ingest(
 ) -> Dict[str, Any]:
     started = time.perf_counter()
     await run_migrations()
+
+    # A CLI run has no HTTP request to inherit a tenant from, so it binds one
+    # explicitly. Corpus ingestion is a deliberate act against a named tenant;
+    # defaulting silently would quietly load one customer's transcripts into
+    # another's account, and RLS would then hide the mistake rather than
+    # surface it.
+    await _bind_ingest_tenant()
 
     root = ensure_corpus(refresh=refresh)
     paths = discover_transcripts(root)

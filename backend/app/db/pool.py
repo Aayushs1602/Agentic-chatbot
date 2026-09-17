@@ -9,13 +9,14 @@ anyone *that* Postgres is down, which is exactly when you need it most.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Optional
 
 import asyncpg
 
 from app.config import settings
 from app.errors import DatabaseUnavailableError
-from app.logging import get_logger
+from app.logging import get_logger, get_tenant_id
 
 log = get_logger("db")
 
@@ -59,7 +60,10 @@ async def create_pool() -> asyncpg.Pool:
         return _pool
     try:
         _pool = await asyncpg.create_pool(
-            dsn=settings.asyncpg_dsn,
+            # The restricted role, not the owner: superusers and table owners
+            # both bypass RLS unconditionally, so connecting as the owner would
+            # make every policy in 003_rls.sql decorative.
+            dsn=settings.app_asyncpg_dsn,
             min_size=settings.db_pool_min,
             max_size=settings.db_pool_max,
             init=_init_connection,
@@ -108,25 +112,59 @@ async def ping() -> bool:
         return False
 
 
-async def fetch(query: str, *args: Any) -> list:
+def _tenant_guc() -> str:
+    """The value handed to Postgres for this request's tenant.
+
+    `get_tenant_id()` uses "-" to mean "no tenant" because it is also a log
+    field, and "-" reads better than an empty column. Postgres needs something
+    it can cast to uuid or treat as absent, and "-" is neither — it raises
+    `invalid_text_representation` from inside the policy, turning an
+    unauthenticated request into a 500 from the security layer.
+    """
+    tenant = get_tenant_id()
+    return "" if tenant == "-" else tenant
+
+
+@asynccontextmanager
+async def _tenant_scope() -> AsyncIterator[asyncpg.Connection]:
+    """A connection whose transaction is bound to the current tenant.
+
+    The transaction is not optional. `set_config(..., is_local => true)` is
+    scoped to the *enclosing transaction*, and without one asyncpg runs each
+    statement in its own implicit transaction — so the setting is committed and
+    discarded before the next statement runs, and every policy sees an empty
+    tenant. Measured, before this wrapper existed: the query returned 0 rows
+    and `current_setting` reported '' to the very next statement.
+
+    The alternative, a plain `SET`, is worse: it persists for the life of the
+    connection, and a pooled connection is handed to the next request — which
+    belongs to a different tenant. That is a cross-tenant read that looks like
+    a successful query.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.tenant_id', $1, true)", _tenant_guc()
+            )
+            yield conn
+
+
+async def fetch(query: str, *args: Any) -> list:
+    async with _tenant_scope() as conn:
         return await conn.fetch(query, *args)
 
 
 async def fetchrow(query: str, *args: Any):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with _tenant_scope() as conn:
         return await conn.fetchrow(query, *args)
 
 
 async def fetchval(query: str, *args: Any):
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with _tenant_scope() as conn:
         return await conn.fetchval(query, *args)
 
 
 async def execute(query: str, *args: Any) -> str:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
+    async with _tenant_scope() as conn:
         return await conn.execute(query, *args)

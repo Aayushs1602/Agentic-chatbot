@@ -6,14 +6,15 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import admin, artifacts, chat, health, keys, providers, search
+from app.api.deps import require_tenant
 from app.config import settings
 from app.db import pool as db
 from app.agent.skills import get_skills
-from app.db.migrate import run_migrations
+from app.db.migrate import provision_app_role, run_migrations
 from app.db.tenants import bootstrap_dev_key
 from app.providers.registry import get_registry
 from app.errors import register_exception_handlers
@@ -44,6 +45,9 @@ async def lifespan(_: FastAPI):
     # A DB that is down must NOT prevent startup — otherwise /readyz can't report it.
     try:
         await run_migrations()
+        # Gives `lenny_app` a password so the pool can authenticate as it.
+        # After migrations, because 003_rls creates the role.
+        await provision_app_role()
         # Seeds DEV_API_KEY against the `dev` tenant when set; no-op otherwise.
         # After migrations, because it needs the tenant row 002 creates.
         await bootstrap_dev_key()
@@ -52,6 +56,17 @@ async def lifespan(_: FastAPI):
             "startup_migrations_failed",
             error=str(exc),
             hint="The API will start in a degraded state; see /readyz.",
+        )
+
+    if settings.running_as_owner:
+        # The single most important line in this log. Every policy in
+        # 003_rls.sql exists and is tested, and none of them apply: the pool is
+        # authenticating as a superuser that owns the tables, and both of those
+        # bypass RLS unconditionally. Tenant isolation is NOT being enforced.
+        log.warning(
+            "rls_not_enforced",
+            hint="APP_DATABASE_URL is unset, so the app connects as the owner. "
+                 "Set APP_DB_PASSWORD and APP_DATABASE_URL to enforce RLS.",
         )
 
     if not settings.auth_required:
@@ -138,12 +153,25 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
 
+    # Routers that touch tenant data authenticate at the router level, not
+    # per-handler: a new endpoint added to one of these files is protected by
+    # default, and protecting it cannot be forgotten. The dependency also binds
+    # the tenant ContextVar that db/pool.py reads for `SET LOCAL app.tenant_id`,
+    # so authentication and row visibility come from the same decision.
+    tenant_scoped = [Depends(require_tenant)]
+
+    # Open: no tenant data. /healthz and /readyz must answer while the database
+    # is down, which is exactly when auth cannot be checked; provider status is
+    # process-level, identical for every tenant, and drives the UI badge.
     app.include_router(health.router)
-    app.include_router(search.router, prefix="/api")
     app.include_router(providers.router, prefix="/api")
-    app.include_router(chat.router, prefix="/api")
-    app.include_router(artifacts.router, prefix="/api")
-    app.include_router(admin.router, prefix="/api")
+
+    app.include_router(search.router, prefix="/api", dependencies=tenant_scoped)
+    app.include_router(chat.router, prefix="/api", dependencies=tenant_scoped)
+    app.include_router(artifacts.router, prefix="/api", dependencies=tenant_scoped)
+    app.include_router(admin.router, prefix="/api", dependencies=tenant_scoped)
+    # keys.py declares require_tenant per route, since it also reads the
+    # principal to know whose keys to list.
     app.include_router(keys.router, prefix="/api")
 
     return app
