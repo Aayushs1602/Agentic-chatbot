@@ -80,7 +80,7 @@ P14 adds no new system — it validates every one of them.
 | Phase | Name | Systems | Exercises | Size | Status |
 |---|---|---|---|---|---|
 | **P0** | Baseline & known-issue cleanup | #4, #10, #14 (existing) | — | ~0.5d | **done** |
-| **P1** | Tenancy, auth, rate limit, usage | #1a, #2, #8 | 2 | ~3d | RLS live; ledger + Ex.2 left |
+| **P1** | Tenancy, auth, usage *(rate limit deferred)* | #1a, #2, #8 | 2 | ~3d | **done** (Ex.2 ⏸) |
 | **P2** | Routing & resilience | #15 | 1 | ~2d | [ ] |
 | **P3** | Prompt & config registry | #9 | 1 | ~2d | [ ] |
 | **P4** | Context assembly & token budget | #13 | 1 | ~2d | [ ] |
@@ -230,10 +230,25 @@ without a join.
 
 **Usage ledger**
 
-- [ ] Provider price map (per-model, input/output, in micros)
-- [ ] Write `usage_events` on the `done` path in `api/chat.py`, where
-      `tokens_in`/`tokens_out` already land
-- [ ] `GET /usage`, `GET /usage/{tenant}` with date-range aggregation
+- [x] `providers/pricing.py`. Rates are **configuration, not constants** —
+      no hosted-model prices are baked into the code, because provider
+      pricing changes on the provider's schedule and a ledger seeded from
+      memory produces confident wrong invoices. Local Ollama is 0 by
+      definition; everything else is *unpriced* until `MODEL_PRICES` says
+      otherwise, and unpriced is reported, not silently treated as free.
+- [x] `usage.record_turn()` on the `_persist` path in `api/chat.py`. Recorded
+      even when the turn errored: tokens burned before a failure are real
+      spend, and dropping failed turns under-reports exactly the traffic
+      worth investigating. Best-effort, like `record_tool_calls` — a ledger
+      write must never turn a delivered answer into a 500.
+- [x] `GET /usage` and `GET /usage/daily`, date-ranged, with a per-model
+      breakdown and p95 latency.
+- [x] **`GET /usage/{tenant}` deliberately not built.** P1's own RLS work
+      made it unimplementable honestly: the pool authenticates as a role
+      that cannot see another tenant's rows, so the endpoint would either
+      return nothing or require bypassing the isolation this phase exists to
+      enforce. Cross-tenant reporting belongs to an operator with owner
+      credentials, not to a path parameter reachable with a tenant's key.
 
 > ✅ **Verified against live Postgres.** `002_tenancy.sql` applied onto the
 > existing populated database (303 episodes, 18,503 chunks) — so the real path,
@@ -340,7 +355,21 @@ retrieval query specifically — it is your most expensive read. Then write down
 where you would draw the line: when is app-level filtering the right call, and
 what would have to be true for you to accept it?
 
-#### 🧪 Exercise 2 — Token-bucket rate limiter  **[you]**
+#### 🧪 Exercise 2 — Token-bucket rate limiter  **[you]** — ⏸ DEFERRED
+
+> **Deferred, not dropped.** Nothing depends on it: the only downstream
+> consumer is P14's chaos scenario 7. It protects a single-tenant local machine
+> from itself, which is to say nothing.
+>
+> Its value is the exercise — watching 50 concurrent requests drain a bucket of
+> 10 because every one of them read `tokens=10` before any wrote back. That
+> lesson is not lost by waiting: P9's `SKIP LOCKED` and idempotency exercises
+> teach the same class of thinking against a subsystem that will actually be
+> used.
+>
+> **Debt this leaves:** `tenants.rpm_limit` and `tenants.rpd_limit` exist and
+> are dead columns until this lands. Named here so they do not become schema
+> nobody remembers the purpose of.
 
 The `RateLimiter` interface, DI wiring and test harness are mine; both
 implementations are yours.

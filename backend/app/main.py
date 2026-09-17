@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, artifacts, chat, health, keys, providers, search
+from app.api import admin, artifacts, chat, health, keys, providers, search, usage
 from app.api.deps import require_tenant
 from app.config import settings
 from app.db import pool as db
@@ -170,9 +170,10 @@ def create_app() -> FastAPI:
     app.include_router(chat.router, prefix="/api", dependencies=tenant_scoped)
     app.include_router(artifacts.router, prefix="/api", dependencies=tenant_scoped)
     app.include_router(admin.router, prefix="/api", dependencies=tenant_scoped)
-    # keys.py declares require_tenant per route, since it also reads the
-    # principal to know whose keys to list.
+    # keys.py and usage.py declare require_tenant per route, since both read
+    # the principal — one to know whose keys to list, the other whose spend.
     app.include_router(keys.router, prefix="/api")
+    app.include_router(usage.router, prefix="/api")
 
     return app
 

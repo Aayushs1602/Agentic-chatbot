@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.agent.orchestrator import Orchestrator, TurnResult, _ReplaceText
 from app.db import repository as repo
+from app.db import usage
 from app.errors import AppError
 from app.security.sanitize import sanitize_html, sanitize_markdown
 from app.logging import get_logger, get_request_id
@@ -257,6 +258,20 @@ async def _persist(
         error=error or result.error,
     )
     await repo.record_tool_calls(session_id, UUID(message["id"]), result.tool_calls)
+
+    # Metered even when the turn errored: tokens consumed before a failure are
+    # real spend, and a ledger that silently drops failed turns under-reports
+    # exactly the traffic worth investigating.
+    await usage.record_turn(
+        session_id=session_id,
+        message_id=UUID(message["id"]),
+        provider=result.provider_id,
+        model=result.model,
+        tokens_in=result.usage.tokens_in,
+        tokens_out=result.usage.tokens_out,
+        latency_ms=result.latency_ms,
+        fell_back_from=result.fell_back_from,
+    )
     return message
 
 

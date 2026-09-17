@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # has no request to inherit a tenant from, so it names one; the run fails
     # loudly if the slug does not exist rather than picking something.
     ingest_tenant_slug: str = "default"
+    # Per-model rates for the usage ledger, as JSON:
+    #   {"model-name": {"in": <micros per Mtok>, "out": <micros per Mtok>}}
+    # Empty by default on purpose — see app/providers/pricing.py. Hosted models
+    # are reported as *unpriced* rather than free until a rate is supplied.
+    model_prices: str = ""
 
     # ── Database ────────────────────────────────────────────────────────
     # Owner credentials. Used ONLY to run migrations and to provision the
